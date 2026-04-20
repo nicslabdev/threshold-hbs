@@ -25,10 +25,12 @@ class LM_OTS
     static final short D_MESG = (short)0x8181;
 
 
+    // Extrae el coeficiente i-ésimo de una cadena de bytes, donde cada coeficiente tiene w bits de ancho
     public static int coef(byte[] S, int i, int w)
     {
         int index = (i * w) / 8;
         int digits_per_byte = 8 / w;
+        // Calcula cuántos bits hay que desplazar a la derecha para alinear el coeficiente i con el bit menos significativo
         int shift = w * (~i & (digits_per_byte - 1));
         int mask = (1 << w) - 1;
 
@@ -36,6 +38,7 @@ class LM_OTS
     }
 
 
+    // Calcula el checksum definido en RFC 8554
     public static int cksm(byte[] S, int sLen, LMOtsParameters parameters)
     {
         int sum = 0;
@@ -45,9 +48,9 @@ class LM_OTS
         // NB assumption about size of "w" not overflowing integer.
         int twoWpow = (1 << w) - 1;
 
-        for (int i = 0; i < (sLen * 8 / parameters.getW()); i++)
+        for (int i = 0; i < (sLen * 8 / parameters.getW()); i++) // Itera sobre todos los coeficientes del mensaje S
         {
-            sum = sum + twoWpow - coef(S, i, parameters.getW());
+            sum = sum + twoWpow - coef(S, i, parameters.getW()); // Suma el complemento del coeficiente respecto al máximo
         }
         return sum << parameters.getLs();
     }
@@ -95,8 +98,10 @@ class LM_OTS
 
         for (int i = 0; i < p; i++) // Itera sobre cada una de las p cadenas
         {
-            derive.deriveSeed(buf, i < p - 1, ITER_PREV); // Deriva la semilla privada para la cadena i y escribe en la posición 23 del buffer su valor
-            Pack.shortToBigEndian((short)i, buf, ITER_K); // Escribe el índice i en la posición 20 del buffer. Esto vincula cada hash al índice de la cadena, evitando que dos cadenas produzcan el mismo valor.
+            // Deriva la semilla privada para la cadena i y escribe en la posición 23 del buffer su valor
+            derive.deriveSeed(buf, i < p - 1, ITER_PREV);
+            // Escribe el índice i en la posición 20 del buffer. Esto vincula cada hash al índice de la cadena, evitando que dos cadenas produzcan el mismo valor.
+            Pack.shortToBigEndian((short)i, buf, ITER_K);
             for (int j = 0; j < twoToWminus1; j++) // Itera sobre cada uno de los (2^w - 1) nodos de la cadena de la posición i
             {
                 // En cada iteración, el hash del valor anterior en la cadena se vuelve la entrada del siguiente, junto con
@@ -110,7 +115,8 @@ class LM_OTS
         }
 
         byte[] K = new byte[publicContext.getDigestSize()];
-        publicContext.doFinal(K, 0); // Finaliza el hash global de la clave pública. Compromiso con todas las claves privadas de las p cadenas
+        // Finaliza el hash global de la clave pública. Compromiso con todas las claves privadas de las p cadenas
+        publicContext.doFinal(K, 0);
 
         return K;
 
@@ -122,24 +128,26 @@ class LM_OTS
         // Add the randomizer.
         //
 
-        byte[] C;
-        byte[] Q = new byte[MAX_HASH + 2];
+        byte[] C; // Para el randomizador
+        byte[] Q = new byte[MAX_HASH + 2]; // Para el hash del mensaje con randomizador (el +2 es para los bytes del checksum que se añaden después)
 
         if (!preHashed)
         {
+            // Crea un contexto de firma que internamente ya contiene I, q y C
             LMSContext qCtx = privateKey.getSignatureContext(sigParams, path);
 
+            // Alimenta el mensaje completo al contexto, que lo va hasheando de forma incremental
             LmsUtils.byteArray(message, 0, message.length, qCtx);
 
-            C = qCtx.getC();
-            Q = qCtx.getQ();
+            C = qCtx.getC(); // Randomizador
+            Q = qCtx.getQ(); // Hash resultante del contexto ya finalizado
         }
         else
         {
             int n = privateKey.getParameter().getN();
             
-            C = new byte[n];
-            System.arraycopy(message, 0, Q, 0, n);
+            C = new byte[n]; // Array de ceros
+            System.arraycopy(message, 0, Q, 0, n); // Copia los primeros n bytes del mensaje en Q (ya viene hasheado)
         }
 
         return lm_ots_generate_signature(privateKey, Q, C);
@@ -149,37 +157,50 @@ class LM_OTS
     {
         LMOtsParameters parameter = privateKey.getParameter();
 
-        int n = parameter.getN();
-        int p = parameter.getP();
-        int w = parameter.getW();
+        int n = parameter.getN(); // Tamaño del hash en bytes
+        int p = parameter.getP(); // Número de cadenas hash de la firma
+        int w = parameter.getW(); // Parámetro de Winternitz (bits por coeficiente)
 
-        byte[] sigComposer = new byte[p * n];
+        byte[] sigComposer = new byte[p * n]; // Buffer final de la firma
 
-        Digest ctx = DigestUtil.getDigest(parameter);
+        Digest ctx = DigestUtil.getDigest(parameter); // Instancia el algoritmo de hash
 
+        // Obtiene la función de derivación que genera las claves privadas individuales a partir de la semilla
         SeedDerive derive = privateKey.getDerivationFunction();
 
+        // Calcula el checksum de los primeros n bytes de Q y lo anexa en los 2 bytes finales
         int cs = cksm(Q, n, parameter);
         Q[n] = (byte)((cs >>> 8) & 0xFF);
         Q[n + 1] = (byte)cs;
 
-        byte[] tmp = Composer.compose().bytes(privateKey.getI()).u32str(privateKey.getQ()).padUntil(0, ITER_PREV + n).build();
+        // Buffer de trabajo con el formato que define el estándar para la entrada a cada hash de la cadena I || q || i || j || hash_previo
+        byte[] tmp = Composer.compose()
+                .bytes(privateKey.getI()) // Identificador del árbol LMS
+                .u32str(privateKey.getQ()) // Índice del nodo hoja
+                .padUntil(0, ITER_PREV + n) // Rellena con ceros hasta posición ITER_PREV+n
+                .build();
 
+        //Resetea el contador interno del derivador para empezar desde la primera clave privada
         derive.setJ(0);
-        for (int i = 0; i < p; i++)
+        for (int i = 0; i < p; i++) // Itera sobre cada una de las p cadenas hash de la firma
         {
             Pack.shortToBigEndian((short)i, tmp, ITER_K);
+            // Deriva la clave privada para esta cadena y la escribe en tmp
             derive.deriveSeed(tmp, i < p - 1, ITER_PREV);
+            // Extrae el coeficiente i de Q (que ahora incluye el checksum). Este valor determina cuántas veces se itera el hash en esta cadena
             int a = coef(Q, i, w);
             for (int j = 0; j < a; j++)
             {
-                tmp[ITER_J] = (byte)j;
+                tmp[ITER_J] = (byte)j; // Escribe j en la posición ITER_J del buffer para diferenciar cada paso de la cadena hash
+                // Aplica el hash sobre tmp y escribe el nuevo resultado en la parte del ITER_PREV, sobreescribiendo la entrada para la siguiente iteración
                 ctx.update(tmp, 0, ITER_PREV + n);
                 ctx.doFinal(tmp, ITER_PREV);
             }
+            // Copia los n bytes del último hash en el buffer de firma en su posición correspondiente
             System.arraycopy(tmp, ITER_PREV, sigComposer, n * i, n);
         }
 
+        // Empaqueta el randomizador C y las p cadenas hash en el objeto de firma final
         return new LMOtsSignature(parameter, C, sigComposer);
     }
 

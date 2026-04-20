@@ -3,7 +3,7 @@ package es.uma.nicslab.hbs.lms;
 import org.bouncycastle.crypto.Digest;
 import org.bouncycastle.util.Pack;
 
-public class LMOtsChainGenerator {
+public class LM_OTS_WITH_CHAIN {
 
     // Constante de dominio para la generación de clave pública (domain separation)
     private static final short D_PBLC = (short)0x8080;
@@ -13,10 +13,46 @@ public class LMOtsChainGenerator {
     private static final int ITER_PREV = 23; // Resultado del hash previo
     private static final int ITER_J = 22; // Contador j
 
-    public static byte[][][] lms_ots_generateChain(LMOtsPrivateKey privateKey)
+    // Tamaño máximo del hash soportado
+    static final int MAX_HASH = 32;
+
+
+    // Extrae el coeficiente i-ésimo de una cadena de bytes, donde cada coeficiente tiene w bits de ancho
+    public static int coef(byte[] S, int i, int w)
     {
+        int index = (i * w) / 8;
+        int digits_per_byte = 8 / w;
+        // Calcula cuántos bits hay que desplazar a la derecha para alinear el coeficiente i con el bit menos significativo
+        int shift = w * (~i & (digits_per_byte - 1));
+        int mask = (1 << w) - 1;
+
+        return (S[index] >>> shift) & mask;
+    }
+
+
+    // Calcula el checksum definido en RFC 8554
+    public static int cksm(byte[] S, int sLen, LMOtsParameters parameters)
+    {
+        int sum = 0;
+
+        int w = parameters.getW();
+
+        // NB assumption about size of "w" not overflowing integer.
+        int twoWpow = (1 << w) - 1;
+
+        for (int i = 0; i < (sLen * 8 / parameters.getW()); i++) // Itera sobre todos los coeficientes del mensaje S
+        {
+            sum = sum + twoWpow - coef(S, i, parameters.getW()); // Suma el complemento del coeficiente respecto al máximo
+        }
+        return sum << parameters.getLs();
+    }
+
+
+    public static LMOtsChain lms_ots_generateChain(LMOtsPrivateKey privateKey)
+    {
+        LMOtsParameters parameter = privateKey.getParameter();
         // Extrae los parámetros del algoritmo, I el identificador del árbol, Q índice de la hoja en el árbol de Merkle y MasterSecret seed.
-        return lms_ots_generateChain(privateKey.getParameter(), privateKey.getI(), privateKey.getQ(), privateKey.getMasterSecret());
+        return new LMOtsChain(parameter, lms_ots_generateChain(parameter, privateKey.getI(), privateKey.getQ(), privateKey.getMasterSecret()));
     }
 
     static byte[][][] lms_ots_generateChain(LMOtsParameters parameter, byte[] I, int q, byte[] masterSecret)
@@ -43,8 +79,10 @@ public class LMOtsChainGenerator {
 
         for (int i = 0; i < p; i++) // Itera sobre cada una de las p cadenas
         {
-            derive.deriveSeed(buf, i < p - 1, ITER_PREV); // Deriva la semilla privada para la cadena i y escribe en la posición 23 del buffer su valor
-            Pack.shortToBigEndian((short)i, buf, ITER_K); // Escribe el índice i en la posición 20 del buffer. Esto vincula cada hash al índice de la cadena, evitando que dos cadenas produzcan el mismo valor.
+            // Deriva la semilla privada para la cadena i y escribe en la posición 23 del buffer su valor
+            derive.deriveSeed(buf, i < p - 1, ITER_PREV);
+            // Escribe el índice i en la posición 20 del buffer. Esto vincula cada hash al índice de la cadena, evitando que dos cadenas produzcan el mismo valor.
+            Pack.shortToBigEndian((short)i, buf, ITER_K);
 
             System.arraycopy(buf, ITER_PREV, sk[i][0], 0, n); // j=0: guardamos la semilla privada antes de cualquier iteración
 
@@ -65,6 +103,7 @@ public class LMOtsChainGenerator {
         return sk;
     }
 
+    // Método creado para comprobar el funcionamiento de lms_ots_generateChain
     public static LMOtsPublicKey lms_ots_publicKeyFromChain(LMOtsPrivateKey privateKey, byte[][][] sk)
     {
         byte[] K = lms_ots_publicKeyFromChain(privateKey.getParameter(), privateKey.getI(), privateKey.getQ(), sk);
@@ -99,6 +138,39 @@ public class LMOtsChainGenerator {
         publicContext.doFinal(K, 0);
 
         return K;
+    }
+
+    // Imponemos que siempre sea preHashed, pues no tenemos acceso a la privateKey
+    public static LMOtsSignature lm_ots_generate_signatureFromChain(LMOtsChain lmOtsChain, byte[] message, byte[] C)
+    {
+        LMOtsParameters parameter = lmOtsChain.getParameter();
+        byte[][][] sk = lmOtsChain.getSk();
+        
+        int n = parameter.getN();
+        int p = parameter.getP();
+        int w = parameter.getW();
+
+        byte[] Q = new byte[MAX_HASH + 2];
+
+        System.arraycopy(message, 0, Q, 0, n);
+
+        // Calcular checksum y añadirlo a Q
+        int cs = cksm(Q, n, parameter);
+        Q[n]     = (byte)((cs >>> 8) & 0xFF);
+        Q[n + 1] = (byte) cs;
+
+        byte[] sigComposer = new byte[p * n];
+
+        for (int i = 0; i < p; i++)
+        {
+            // Coeficiente: cuántos pasos se dieron en la firma original
+            int a = coef(Q, i, w);
+
+            // En sk[i][a] está el resultado de hashear sk[i][0] a veces
+            System.arraycopy(sk[i][a], 0, sigComposer, n * i, n);
+        }
+
+        return new LMOtsSignature(parameter, C, sigComposer);
     }
 
 }

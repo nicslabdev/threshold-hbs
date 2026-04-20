@@ -5,7 +5,7 @@ import org.bouncycastle.util.encoders.Hex;
 
 import java.security.SecureRandom;
 
-public class LMOtsChainGeneratorDemo {
+public class LM_OTS_WITH_CHAIN_Demo {
 
     public static void main(String[] args) {
 
@@ -28,17 +28,18 @@ public class LMOtsChainGeneratorDemo {
 
         LMOtsPublicKey lmOtsPublicKey = LM_OTS.lms_ots_generatePublicKey(lmOtsPrivateKey);
 
-        byte[][][] chain = LMOtsChainGenerator.lms_ots_generateChain(lmOtsPrivateKey);
+        LMOtsChain lmOtsChain = LM_OTS_WITH_CHAIN.lms_ots_generateChain(lmOtsPrivateKey);
+        byte[][][] sk = lmOtsChain.getSk();
 
-        for (int i = 0; i < chain.length; i++)
+        for (int i = 0; i < sk.length; i++)
         {
-            for (int j = 0; j < chain[i].length; j++)
+            for (int j = 0; j < sk[i].length; j++)
             {
-                System.out.println("sk[" + i + "][" + j + "] = " + Hex.toHexString(chain[i][j]));
+                System.out.println("sk[" + i + "][" + j + "] = " + Hex.toHexString(sk[i][j]));
             }
         }
 
-        LMOtsPublicKey lmOtsPublicKeyFromChain = LMOtsChainGenerator.lms_ots_publicKeyFromChain(lmOtsPrivateKey, chain);
+        LMOtsPublicKey lmOtsPublicKeyFromChain = LM_OTS_WITH_CHAIN.lms_ots_publicKeyFromChain(lmOtsPrivateKey, sk);
 
         boolean iguales = lmOtsPublicKey.equals(lmOtsPublicKeyFromChain);
 
