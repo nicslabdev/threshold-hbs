@@ -51,8 +51,9 @@ public class LM_OTS_WITH_CHAIN {
     public static LMOtsChain lms_ots_generateChain(LMOtsPrivateKey privateKey)
     {
         LMOtsParameters parameter = privateKey.getParameter();
-        // Extrae los parámetros del algoritmo, I el identificador del árbol, Q índice de la hoja en el árbol de Merkle y MasterSecret seed.
-        return new LMOtsChain(parameter, lms_ots_generateChain(parameter, privateKey.getI(), privateKey.getQ(), privateKey.getMasterSecret()));
+        byte[] I = privateKey.getI(); // Identificador del árbol
+        int q = privateKey.getQ(); // Índice de la hoja en el árbol
+        return new LMOtsChain(parameter, lms_ots_generateChain(parameter, I, q, privateKey.getMasterSecret()), I, q);
     }
 
     static byte[][][] lms_ots_generateChain(LMOtsParameters parameter, byte[] I, int q, byte[] masterSecret)
@@ -103,15 +104,15 @@ public class LM_OTS_WITH_CHAIN {
         return sk;
     }
 
-    // Método creado para comprobar el funcionamiento de lms_ots_generateChain
-    public static LMOtsPublicKey lms_ots_publicKeyFromChain(LMOtsPrivateKey privateKey, byte[][][] sk)
-    {
-        byte[] K = lms_ots_publicKeyFromChain(privateKey.getParameter(), privateKey.getI(), privateKey.getQ(), sk);
-        return new LMOtsPublicKey(privateKey.getParameter(), privateKey.getI(), privateKey.getQ(), K);
-    }
 
-    static byte[] lms_ots_publicKeyFromChain(LMOtsParameters parameter, byte[] I, int q, byte[][][] sk)
+    public static LMOtsPublicKey lms_ots_publicKeyFromChain(LMOtsChain chain)
     {
+
+        LMOtsParameters parameter = chain.getParameter();
+        byte[] I = chain.getI();
+        int q = chain.getQ();
+        byte[][][] sk = chain.getSk();
+
         // Contexto del hash para calcular el valor final de la clave pública
         Digest publicContext = DigestUtil.getDigest(parameter);
         // Prefijo del hash de la clave pública, I || q || 0x8080 || 0x0000
@@ -137,10 +138,10 @@ public class LM_OTS_WITH_CHAIN {
         byte[] K = new byte[publicContext.getDigestSize()];
         publicContext.doFinal(K, 0);
 
-        return K;
+        return new LMOtsPublicKey(parameter, I, q, K);
     }
 
-    // Imponemos que siempre sea preHashed, pues no tenemos acceso a la privateKey
+    // El mensaje no debe estar preHasheado, pero necesitamos proporcionar el randomizer C
     public static LMOtsSignature lm_ots_generate_signatureFromChain(LMOtsChain lmOtsChain, byte[] message, byte[] C)
     {
         LMOtsParameters parameter = lmOtsChain.getParameter();

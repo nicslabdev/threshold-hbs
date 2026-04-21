@@ -204,7 +204,8 @@ class LM_OTS
         return new LMOtsSignature(parameter, C, sigComposer);
     }
 
-    public static boolean lm_ots_validate_signature(LMOtsPublicKey publicKey, LMOtsSignature signature, byte[] message, boolean prehashed)
+    // Comentado porque no tiene en cuenta si prehashed es true o false
+    /*public static boolean lm_ots_validate_signature(LMOtsPublicKey publicKey, LMOtsSignature signature, byte[] message, boolean prehashed)
         throws LMSException
     {
         if (!signature.getType().equals(publicKey.getParameter()))
@@ -212,16 +213,42 @@ class LM_OTS
             throw new LMSException("public key and signature ots types do not match");
         }
         return Arrays.areEqual(lm_ots_validate_signature_calculate(publicKey, signature, message), publicKey.getK());
+    }*/
+
+    // Aquí sí tiene en cuenta si prehashed es true o false
+    public static boolean lm_ots_validate_signature(LMOtsPublicKey publicKey, LMOtsSignature signature, byte[] message, boolean prehashed) throws LMSException
+    {
+        if (!signature.getType().equals(publicKey.getParameter()))
+        {
+            throw new LMSException("public key and signature ots types do not match");
+        }
+
+        byte[] Kc;
+        if (!prehashed)
+        {
+            LMSContext ctx = publicKey.createOtsContext(signature);
+            LmsUtils.byteArray(message, ctx);
+            Kc = lm_ots_validate_signature_calculate(ctx);
+        }
+        else
+        {
+            // message ya es el hash: lo pasamos directamente como Q
+            Kc = lm_ots_validate_signature_calculate_withQ(publicKey, signature, message);
+        }
+
+        return Arrays.areEqual(Kc, publicKey.getK());
     }
 
-    public static byte[] lm_ots_validate_signature_calculate(LMOtsPublicKey publicKey, LMOtsSignature signature, byte[] message)
+    // Con el nuevo método esto ya no haría falta
+    /*public static byte[] lm_ots_validate_signature_calculate(LMOtsPublicKey publicKey, LMOtsSignature signature, byte[] message)
     {
+        // Crea un contexto de cálculo combinando la clave pública con la firma
         LMSContext ctx = publicKey.createOtsContext(signature);
 
         LmsUtils.byteArray(message, ctx);
 
         return lm_ots_validate_signature_calculate(ctx);
-    }
+    }*/
 
     public static byte[] lm_ots_validate_signature_calculate(LMSContext context)
     {
@@ -286,4 +313,57 @@ class LM_OTS
 
         return K;
     }
+
+    // Nuevo método que acepta Q ya construido
+    private static byte[] lm_ots_validate_signature_calculate_withQ(LMOtsPublicKey publicKey, LMOtsSignature signature, byte[] Q)
+    {
+        LMOtsParameters parameter = publicKey.getParameter();
+        int n = parameter.getN();
+        int w = parameter.getW();
+        int p = parameter.getP();
+
+        // Copia para no mutar el array externo
+        byte[] Qwork = java.util.Arrays.copyOf(Q, MAX_HASH + 2);
+
+        int cs = cksm(Qwork, n, parameter);
+        Qwork[n] = (byte)((cs >>> 8) & 0xFF);
+        Qwork[n + 1] = (byte) cs;
+
+        byte[] I = publicKey.getI();
+        int q = publicKey.getQ();
+
+        Digest finalContext = DigestUtil.getDigest(parameter);
+        LmsUtils.byteArray(I, finalContext);
+        LmsUtils.u32str(q, finalContext);
+        LmsUtils.u16str(D_PBLC, finalContext);
+
+        byte[] tmp = Composer.compose()
+                .bytes(I)
+                .u32str(q)
+                .padUntil(0, ITER_PREV + n)
+                .build();
+
+        int max_digit = (1 << w) - 1;
+        byte[] y = signature.getY();
+        Digest ctx = DigestUtil.getDigest(parameter);
+
+        for (int i = 0; i < p; i++)
+        {
+            Pack.shortToBigEndian((short)i, tmp, ITER_K);
+            System.arraycopy(y, i * n, tmp, ITER_PREV, n);
+            int a = coef(Qwork, i, w);
+            for (int j = a; j < max_digit; j++)
+            {
+                tmp[ITER_J] = (byte)j;
+                ctx.update(tmp, 0, ITER_PREV + n);
+                ctx.doFinal(tmp, ITER_PREV);
+            }
+            finalContext.update(tmp, ITER_PREV, n);
+        }
+
+        byte[] K = new byte[n];
+        finalContext.doFinal(K, 0);
+        return K;
+    }
+
 }
