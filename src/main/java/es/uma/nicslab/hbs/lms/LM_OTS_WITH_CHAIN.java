@@ -76,7 +76,7 @@ public class LM_OTS_WITH_CHAIN {
         int n = parameter.getN(); // tamaño del hash en bytes
         final int twoToWminus1 = (1 << parameter.getW()) - 1; // iteraciones por cadena (2^w - 1)
 
-        byte[][][] sk = new byte[p][twoToWminus1+1][n]; // matriz tridimensional para las cadenas de Winternitz
+        byte[][][] SK = new byte[p][twoToWminus1+1][n]; // matriz tridimensional para las cadenas de Winternitz
 
         for (int i = 0; i < p; i++) // Itera sobre cada una de las p cadenas
         {
@@ -85,7 +85,7 @@ public class LM_OTS_WITH_CHAIN {
             // Escribe el índice i en la posición 20 del buffer. Esto vincula cada hash al índice de la cadena, evitando que dos cadenas produzcan el mismo valor.
             Pack.shortToBigEndian((short)i, buf, ITER_K);
 
-            System.arraycopy(buf, ITER_PREV, sk[i][0], 0, n); // j=0: guardamos la semilla privada antes de cualquier iteración
+            System.arraycopy(buf, ITER_PREV, SK[i][0], 0, n); // j=0: guardamos la semilla privada antes de cualquier iteración
 
             for (int j = 0; j < twoToWminus1; j++) // Itera sobre cada uno de los (2^w - 1) nodos de la cadena de la posición i
             {
@@ -96,12 +96,12 @@ public class LM_OTS_WITH_CHAIN {
                 ctx.update(buf, 0, buf.length); // Hashea el buffer
                 ctx.doFinal(buf, ITER_PREV); // Sobreescribe la parte del hash previo con el resultado anterior (posición 23 del buffer)
 
-                // Guarda el estado del hash tras la iteración j de la cadena i en sk
-                System.arraycopy(buf, ITER_PREV, sk[i][j+1], 0, n);
+                // Guarda el estado del hash tras la iteración j de la cadena i en SK
+                System.arraycopy(buf, ITER_PREV, SK[i][j+1], 0, n);
             }
         }
 
-        return sk;
+        return SK;
     }
 
 
@@ -111,7 +111,7 @@ public class LM_OTS_WITH_CHAIN {
         LMOtsParameters parameter = chain.getParameter();
         byte[] I = chain.getI();
         int q = chain.getQ();
-        byte[][][] sk = chain.getSk();
+        byte[][][] SK = chain.getSK();
 
         // Contexto del hash para calcular el valor final de la clave pública
         Digest publicContext = DigestUtil.getDigest(parameter);
@@ -132,7 +132,7 @@ public class LM_OTS_WITH_CHAIN {
         for (int i = 0; i < p; i++)
         {
             // El extremo público de cada cadena es el último valor, en j = twoToWminus1 - 1
-            publicContext.update(sk[i][twoToWminus1], 0, n);
+            publicContext.update(SK[i][twoToWminus1], 0, n);
         }
 
         byte[] K = new byte[publicContext.getDigestSize()];
@@ -141,11 +141,10 @@ public class LM_OTS_WITH_CHAIN {
         return new LMOtsPublicKey(parameter, I, q, K);
     }
 
-    // El mensaje no debe estar preHasheado, pero necesitamos proporcionar el randomizer C
     public static LMOtsSignature lm_ots_generate_signatureFromChain(LMOtsChain lmOtsChain, byte[] message, byte[] C)
     {
         LMOtsParameters parameter = lmOtsChain.getParameter();
-        byte[][][] sk = lmOtsChain.getSk();
+        byte[][][] SK = lmOtsChain.getSK();
         
         int n = parameter.getN();
         int p = parameter.getP();
@@ -167,8 +166,8 @@ public class LM_OTS_WITH_CHAIN {
             // Coeficiente: cuántos pasos se dieron en la firma original
             int a = coef(Q, i, w);
 
-            // En sk[i][a] está el resultado de hashear sk[i][0] a veces
-            System.arraycopy(sk[i][a], 0, sigComposer, n * i, n);
+            // En SK[i][a] está el resultado de hashear SK[i][0] a veces
+            System.arraycopy(SK[i][a], 0, sigComposer, n * i, n);
         }
 
         return new LMOtsSignature(parameter, C, sigComposer);

@@ -161,7 +161,7 @@ public class LMSPrivateKeyParameters
     }
 
 
-    LMOtsPrivateKey getCurrentOTSKey()
+    public LMOtsPrivateKey getCurrentOTSKey()    // QUITAR PUBLIC AL ACABAR DE HACER LAS PRUEBAS EN DEALER
     {
         synchronized (this)
         {

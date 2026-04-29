@@ -5,7 +5,7 @@ import org.bouncycastle.crypto.Digest;
 import static es.uma.nicslab.hbs.lms.LM_OTS.D_MESG;
 import static es.uma.nicslab.hbs.lms.LM_OTS.SEED_RANDOMISER_INDEX;
 
-class LMOtsPrivateKey
+public class LMOtsPrivateKey   // QUITAR PUBLIC AL ACABAR DE HACER LAS PRUEBAS EN DEALER
 {
     private final LMOtsParameters parameter;
     private final byte[] I;

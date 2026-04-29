@@ -32,14 +32,14 @@ public class LM_OTS_WITH_CHAIN_Demo {
         LMOtsPublicKey lmOtsPublicKey = LM_OTS.lms_ots_generatePublicKey(lmOtsPrivateKey);
 
         LMOtsChain lmOtsChain = LM_OTS_WITH_CHAIN.lms_ots_generateChain(lmOtsPrivateKey);
-        byte[][][] sk = lmOtsChain.getSk();
+        byte[][][] SK = lmOtsChain.getSK();
         LMOtsParameters parameter = lmOtsChain.getParameter();
 
-        /*for (int i = 0; i < sk.length; i++)
+        /*for (int i = 0; i < SK.length; i++)
         {
-            for (int j = 0; j < sk[i].length; j++)
+            for (int j = 0; j < SK[i].length; j++)
             {
-                System.out.println("sk[" + i + "][" + j + "] = " + Hex.toHexString(sk[i][j]));
+                System.out.println("SK[" + i + "][" + j + "] = " + Hex.toHexString(SK[i][j]));
             }
         }*/
 

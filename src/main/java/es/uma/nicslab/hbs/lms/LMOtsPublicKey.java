@@ -13,7 +13,7 @@ import org.bouncycastle.util.io.Streams;
 
 import static es.uma.nicslab.hbs.lms.LM_OTS.D_MESG;
 
-class LMOtsPublicKey
+public class LMOtsPublicKey     // QUITAR PUBLIC AL ACABAR DE HACER LAS PRUEBAS EN DEALER
     implements Encodable
 {
     private final LMOtsParameters parameter;

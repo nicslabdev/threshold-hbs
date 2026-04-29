@@ -4,7 +4,7 @@ import org.bouncycastle.crypto.Digest;
 import org.bouncycastle.util.Arrays;
 import org.bouncycastle.util.Pack;
 
-class LM_OTS
+public class LM_OTS     // QUITAR PUBLIC AL ACABAR DE HACER LAS PRUEBAS EN DEALER
 {
 
     // Constante de dominio para la generación de clave pública (domain separation)
