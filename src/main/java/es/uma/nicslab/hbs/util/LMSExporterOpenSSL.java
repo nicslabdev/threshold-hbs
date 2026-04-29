@@ -60,7 +60,7 @@ public class LMSExporterOpenSSL {
         // 6. Exportar certificado X.509 autofirmado
         exportCertificate(publicKey, privateKey, "cert.pem");
 
-        System.out.println("Archivos generados: lmspub.pem, sig.file, message.bin");
+        System.out.println("Archivos generados: lmspub.pem, sig.file, message.bin, cert.pem");
         System.out.println("Verificar con:");
         System.out.println("  openssl pkeyutl -verify -in message.bin -sigfile sig.file -inkey lmspub.pem -pubin");
         System.out.println("Inspeccionar certificado con:");
