@@ -40,18 +40,6 @@ public class ByteUtils {
         return result;
     }
 
-    public static byte[][] xorPath(byte[][] original, byte[][][] sharesPath) {
-        // sharesPath[t][i] = n bytes del nodo en la capa i del trustee t
-        byte[][] result = new byte[original.length][];
-        for (int i = 0; i < original.length; i++) {
-            result[i] = original[i].clone();
-            for (int t = 0; t < sharesPath.length; t++) {
-                result[i] = xorBytes(result[i], sharesPath[t][i]);
-            }
-        }
-        return result;
-    }
-
     public static byte[][][] xorSK(byte[][][] original, byte[][][][] sharesSK) {
         int chains = original.length;
         int steps  = original[0].length;

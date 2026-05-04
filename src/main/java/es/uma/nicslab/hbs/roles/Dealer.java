@@ -10,6 +10,7 @@ public class Dealer {
 
         int k = keys.length;
         int n = R.length;
+        int p = PATH.length;
         byte[] keyIdBytes = ByteUtils.intToBytes(keyId);
 
         byte[][] CHK = new byte[k][];
@@ -17,23 +18,23 @@ public class Dealer {
             CHK[t] = PRF.evalAUTH(keys[t], keyIdBytes, R, n);
         }
 
+        byte[] CHKconcat = ByteUtils.concat(CHK);
+        byte[] PATHconcat = ByteUtils.concat(PATH);
+
         byte[][] sharesR    = new byte[k][];
         byte[][] sharesCHK  = new byte[k][];
-        byte[][][] sharesPATH = new byte[k][][];
+        byte[][] sharesPATH = new byte[k][];
         byte[][][][] sharesSK = new byte[k][][][];
 
         for (int t = 0; t < k; t++) {
             // R_t = PRF^R_{K[t]}(KeyID, n)
             sharesR[t] = PRF.evalR(keys[t], keyIdBytes, n);
 
-            // CHK_t ← PRF^CHK_{K[t]}(KeyID, |chk|)
-            sharesCHK[t] = PRF.evalCHK(keys[t], keyIdBytes, n);
+            // CHK_t ← PRF^CHK_{K[t]}(KeyID, |CHK|)
+            sharesCHK[t] = PRF.evalCHK(keys[t], keyIdBytes, CHKconcat.length);
 
             // PATH_t ← PRF^PATH_{K[t]}(KeyID, |PATH|)
-            sharesPATH[t] = new byte[PATH.length][];
-            for (int i = 0; i < PATH.length; i++) {
-                sharesPATH[t][i] = PRF.evalPATH(keys[t], keyIdBytes, PATH[i].length);
-            }
+            sharesPATH[t] = PRF.evalPATH(keys[t], keyIdBytes, PATHconcat.length);
 
             // SK_t[i][j] ← PRF^Chain_{K[t]}(KeyID, i, j, n)
             int chains = SK.length;
@@ -50,10 +51,10 @@ public class Dealer {
         byte[] crvR = ByteUtils.xorAll(R, sharesR);
 
         // CRV.CHK = CHK ⊕ CHK_1 ⊕ ... ⊕ CHK_k
-        byte[] crvCHK = null; // OBTENER ESTO --> CREO QUE HAY QUE CAMBIAR CRV.CHK POR BYTE[][]
+        byte[] crvCHK = ByteUtils.xorAll(CHKconcat, sharesCHK);
 
         // CRV.PATH = PATH ⊕ PATH_1 ⊕ ... ⊕ PATH_k
-        byte[][] crvPATH = ByteUtils.xorPath(PATH, sharesPATH);
+        byte[] crvPATH = ByteUtils.xorAll(PATHconcat, sharesPATH);
 
         // CRV.SK[i][j] = SK[i][j] ⊕ SK_1[i][j] ⊕ ... ⊕ SK_k[i][j]
         byte[][][] crvSK = ByteUtils.xorSK(SK, sharesSK);

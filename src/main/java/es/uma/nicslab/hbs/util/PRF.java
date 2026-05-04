@@ -24,8 +24,8 @@ public class PRF {
         return evaluate(key, LABEL_CHK, keyId, n);
     }
 
-    public static byte[] evalPATH(byte[] key, byte[] keyId, int pathLengthBytes) {
-        return evaluate(key, LABEL_PATH, keyId, pathLengthBytes);
+    public static byte[] evalPATH(byte[] key, byte[] keyId, int n) {
+        return evaluate(key, LABEL_PATH, keyId, n);
     }
 
     public static byte[] evalAUTH(byte[] key, byte[] keyId, byte[] R, int n) {

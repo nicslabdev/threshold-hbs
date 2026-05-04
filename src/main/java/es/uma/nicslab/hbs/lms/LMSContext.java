@@ -55,10 +55,10 @@ public class LMSContext
         return Q;
     }
 
-    byte[][] getPath()
+    public byte[][] getPath()
     {
         return path;
-    }
+    }  // QUITAR PUBLIC AL ACABAR DE HACER LAS PRUEBAS EN DEALER
 
     LMOtsPrivateKey getPrivateKey()
     {

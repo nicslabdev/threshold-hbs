@@ -6,20 +6,13 @@ public class CRV {
 
     private final byte[] R; // Randomizer
     private final byte[] CHK; // Key-dependent check value for R
-    private final byte[][] PATH; // Camino de autenticación
+    private final byte[] PATH; // Camino de autenticación
     private final byte[][][] SK; // Cadena de hashes
 
-    public CRV(byte[] R, byte[] CHK, byte[][] PATH, byte[][][] SK) {
+    public CRV(byte[] R, byte[] CHK, byte[] PATH, byte[][][] SK) {
         this.R = R != null ? R.clone() : null;
         this.CHK = CHK != null ? CHK.clone() : null;
-        if (PATH != null) {
-            this.PATH = new byte[PATH.length][];
-            for (int i = 0; i < PATH.length; i++) {
-                this.PATH[i] = PATH[i] != null ? PATH[i].clone() : null;
-            }
-        } else {
-            this.PATH = null;
-        }
+        this.PATH = PATH != null ? PATH.clone() : null;
         if (SK != null) {
             this.SK = new byte[SK.length][][];
             for (int i = 0; i < SK.length; i++) {
@@ -41,13 +34,8 @@ public class CRV {
         return CHK != null ? CHK.clone() : null;
     }
 
-    public byte[][] getPATH() {
-        if (PATH == null) return null;
-        byte[][] copy = new byte[PATH.length][];
-        for (int i = 0; i < PATH.length; i++) {
-            copy[i] = PATH[i] != null ? PATH[i].clone() : null;
-        }
-        return copy;
+    public byte[] getPATH() {
+        return PATH != null ? PATH.clone() : null;
     }
 
     public byte[][][] getSK() {
@@ -71,20 +59,10 @@ public class CRV {
         sb.append("  R:    ").append(R != null ? Hex.toHexString(R) : "null").append("\n");
 
         // CHK — byte[]
-        sb.append("  CHK:  ").append(CHK != null ? Hex.toHexString(CHK) : "null").append("\n");
+        sb.append("  CHK:    ").append(CHK != null ? Hex.toHexString(CHK) : "null").append("\n");
 
         // PATH — byte[]
-        sb.append("  PATH: [\n");
-        if (PATH != null) {
-            for (int i = 0; i < PATH.length; i++) {
-                sb.append("    Node ").append(i).append(": ")
-                        .append(PATH[i] != null ? Hex.toHexString(PATH[i]) : "null")
-                        .append("\n");
-            }
-        } else {
-            sb.append("    null\n");
-        }
-        sb.append("  ]\n");
+        sb.append("  PATH:    ").append(PATH != null ? Hex.toHexString(PATH) : "null").append("\n");
 
         // SK — byte[][][]
         sb.append("  SK: [\n");
