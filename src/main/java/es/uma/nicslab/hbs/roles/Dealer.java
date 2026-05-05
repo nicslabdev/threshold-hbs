@@ -1,16 +1,16 @@
 package es.uma.nicslab.hbs.roles;
 
+import es.uma.nicslab.hbs.lms.LMOtsParameters;
 import es.uma.nicslab.hbs.model.*;
 import es.uma.nicslab.hbs.util.*;
 
 
 public class Dealer {
 
-    public static SetupResult KK_Setup(byte[][] keys, int keyId, byte[][][] SK, byte[] R, byte[][] PATH) {
+    public static SetupResult KK_Setup(byte[][] keys, int keyId, byte[][][] SK, byte[] R, byte[][] PATH, LMOtsParameters parameter) {
 
         int k = keys.length;
         int n = R.length;
-        int p = PATH.length;
         byte[] keyIdBytes = ByteUtils.intToBytes(keyId);
 
         byte[][] CHK = new byte[k][];
@@ -63,7 +63,7 @@ public class Dealer {
 
         TrusteeShare[] shares = new TrusteeShare[k];
         for (int t = 0; t < k; t++) {
-            shares[t] = new TrusteeShare(keyIdBytes, keys[t]);
+            shares[t] = new TrusteeShare(keyIdBytes, keys[t], parameter);
         }
 
         return new SetupResult(crv, shares);

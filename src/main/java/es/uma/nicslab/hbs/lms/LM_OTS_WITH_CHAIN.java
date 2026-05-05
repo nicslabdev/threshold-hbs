@@ -173,4 +173,29 @@ public class LM_OTS_WITH_CHAIN {
         return new LMOtsSignature(parameter, C, sigComposer);
     }
 
+    public static byte[] lm_ots_generate_ZFromSK(byte[] h, byte[][][] SK, LMOtsParameters parameter) {
+
+        int n = parameter.getN();
+        int p = parameter.getP();
+        int w = parameter.getW();
+
+        byte[] Q = new byte[MAX_HASH + 2];
+        System.arraycopy(h, 0, Q, 0, n);
+
+        // Checksum
+        int cs = cksm(Q, n, parameter);
+        Q[n] = (byte)((cs >>> 8) & 0xFF);
+        Q[n + 1] = (byte) cs;
+
+        byte[] Z = new byte[p * n];
+
+        for (int i = 0; i < p; i++) {
+            int a = coef(Q, i, w);
+            // SK[i][a] es el valor en el paso a de la cadena i del trustee t
+            System.arraycopy(SK[i][a], 0, Z, n * i, n);
+        }
+
+        return Z;
+    }
+
 }

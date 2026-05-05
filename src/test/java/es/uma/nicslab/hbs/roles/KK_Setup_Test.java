@@ -58,13 +58,14 @@ public class KK_Setup_Test {
 
         LMOtsChain chain = LM_OTS_WITH_CHAIN.lms_ots_generateChain(otsPrivateKey);
         SK = chain.getSK();
+        LMOtsParameters parameter = chain.getParameter();
 
         // Randomizer
         R = new byte[n];
         rng.nextBytes(R);
 
         // Ejecutar KK_Setup
-        result = Dealer.KK_Setup(keys, keyId, SK, R, PATH);
+        result = Dealer.KK_Setup(keys, keyId, SK, R, PATH, parameter);
 
         CRV CRV = result.getCRV();
 
