@@ -7,11 +7,13 @@ public class TrusteeShare {
     private final byte[] keyId;
     private final byte[] K;
     private final LMOtsParameters parameter;
+    private final byte[] I;  // Identificador del árbol LMS
 
-    public TrusteeShare(byte[] keyId, byte[] K, LMOtsParameters parameter) {
+    public TrusteeShare(byte[] keyId, byte[] K, LMOtsParameters parameter, byte[] I) {
         this.keyId = keyId != null ? keyId.clone() : null;
         this.K = K != null ? K.clone() : null;
         this.parameter = parameter;
+        this.I = I != null ? I.clone() : null;
     }
 
     public byte[] getKeyId() {
@@ -24,6 +26,10 @@ public class TrusteeShare {
 
     public LMOtsParameters getParameter() {
         return parameter;
+    }
+
+    public byte[] getI() {
+        return I != null ? I.clone() : null;
     }
 
 }

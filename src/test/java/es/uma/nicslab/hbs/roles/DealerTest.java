@@ -13,7 +13,7 @@ import java.security.SecureRandom;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-public class KK_Setup_Test {
+public class DealerTest {
 
     private byte[] R;
     private byte[][] PATH;
@@ -59,13 +59,14 @@ public class KK_Setup_Test {
         LMOtsChain chain = LM_OTS_WITH_CHAIN.lms_ots_generateChain(otsPrivateKey);
         SK = chain.getSK();
         LMOtsParameters parameter = chain.getParameter();
+        byte[] I = chain.getI();
 
         // Randomizer
         R = new byte[n];
         rng.nextBytes(R);
 
         // Ejecutar KK_Setup
-        result = Dealer.KK_Setup(keys, keyId, SK, R, PATH, parameter);
+        result = Dealer.KK_Setup(keys, keyId, SK, R, PATH, parameter, I);
 
         CRV CRV = result.getCRV();
 

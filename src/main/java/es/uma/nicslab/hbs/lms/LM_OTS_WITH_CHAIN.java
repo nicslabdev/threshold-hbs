@@ -18,8 +18,7 @@ public class LM_OTS_WITH_CHAIN {
 
 
     // Extrae el coeficiente i-ésimo de una cadena de bytes, donde cada coeficiente tiene w bits de ancho
-    public static int coef(byte[] S, int i, int w)
-    {
+    public static int coef(byte[] S, int i, int w) {
         int index = (i * w) / 8;
         int digits_per_byte = 8 / w;
         // Calcula cuántos bits hay que desplazar a la derecha para alinear el coeficiente i con el bit menos significativo
@@ -31,8 +30,7 @@ public class LM_OTS_WITH_CHAIN {
 
 
     // Calcula el checksum definido en RFC 8554
-    public static int cksm(byte[] S, int sLen, LMOtsParameters parameters)
-    {
+    public static int cksm(byte[] S, int sLen, LMOtsParameters parameters) {
         int sum = 0;
 
         int w = parameters.getW();
@@ -48,16 +46,14 @@ public class LM_OTS_WITH_CHAIN {
     }
 
 
-    public static LMOtsChain lms_ots_generateChain(LMOtsPrivateKey privateKey)
-    {
+    public static LMOtsChain lms_ots_generateChain(LMOtsPrivateKey privateKey) {
         LMOtsParameters parameter = privateKey.getParameter();
         byte[] I = privateKey.getI(); // Identificador del árbol
         int q = privateKey.getQ(); // Índice de la hoja en el árbol
         return new LMOtsChain(parameter, lms_ots_generateChain(parameter, I, q, privateKey.getMasterSecret()), I, q);
     }
 
-    static byte[][][] lms_ots_generateChain(LMOtsParameters parameter, byte[] I, int q, byte[] masterSecret)
-    {
+    static byte[][][] lms_ots_generateChain(LMOtsParameters parameter, byte[] I, int q, byte[] masterSecret) {
         // Contexto del hash para calcular la cadena de Winternitz
         Digest ctx = DigestUtil.getDigest(parameter);
         // Buffer de trabajo para las iteraciones, I || q || i || j || hash_previo
@@ -105,8 +101,7 @@ public class LM_OTS_WITH_CHAIN {
     }
 
 
-    public static LMOtsPublicKey lms_ots_publicKeyFromChain(LMOtsChain chain)
-    {
+    public static LMOtsPublicKey lms_ots_publicKeyFromChain(LMOtsChain chain) {
 
         LMOtsParameters parameter = chain.getParameter();
         byte[] I = chain.getI();
@@ -141,8 +136,7 @@ public class LM_OTS_WITH_CHAIN {
         return new LMOtsPublicKey(parameter, I, q, K);
     }
 
-    public static LMOtsSignature lm_ots_generate_signatureFromChain(LMOtsChain lmOtsChain, byte[] message, byte[] C)
-    {
+    public static LMOtsSignature lm_ots_generate_signatureFromChain(LMOtsChain lmOtsChain, byte[] message, byte[] C) {
         LMOtsParameters parameter = lmOtsChain.getParameter();
         byte[][][] SK = lmOtsChain.getSK();
         

@@ -8,6 +8,15 @@ public class ByteUtils {
         };
     }
 
+    public static int bytesToInt(byte[] v) {
+        if (v == null || v.length != 4)
+            throw new IllegalArgumentException("bytesToInt: se esperan exactamente 4 bytes, recibidos: " + (v == null ? "null" : v.length));
+        return ((v[0] & 0xFF) << 24)
+                | ((v[1] & 0xFF) << 16)
+                | ((v[2] & 0xFF) << 8)
+                |  (v[3] & 0xFF);
+    }
+
     public static byte[] concat(byte[]... parts) {
         int total = 0;
         for (byte[] p : parts) total += p.length;

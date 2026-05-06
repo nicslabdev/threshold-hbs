@@ -7,7 +7,7 @@ import es.uma.nicslab.hbs.util.*;
 
 public class Dealer {
 
-    public static SetupResult KK_Setup(byte[][] keys, int keyId, byte[][][] SK, byte[] R, byte[][] PATH, LMOtsParameters parameter) {
+    public static SetupResult KK_Setup(byte[][] keys, int keyId, byte[][][] SK, byte[] R, byte[][] PATH, LMOtsParameters parameter, byte[] I) {
 
         int k = keys.length;
         int n = R.length;
@@ -63,7 +63,7 @@ public class Dealer {
 
         TrusteeShare[] shares = new TrusteeShare[k];
         for (int t = 0; t < k; t++) {
-            shares[t] = new TrusteeShare(keyIdBytes, keys[t], parameter);
+            shares[t] = new TrusteeShare(keyIdBytes, keys[t], parameter, I);
         }
 
         return new SetupResult(crv, shares);
