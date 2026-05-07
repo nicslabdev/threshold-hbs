@@ -29,6 +29,18 @@ public class ByteUtils {
         return result;
     }
 
+    public static byte[][] deconcat(byte[] data, int chunkSize) {
+        if (data.length % chunkSize != 0)
+            throw new IllegalArgumentException("deconcat: longitud " + data.length + " no es múltiplo de " + chunkSize);
+        int chunks = data.length / chunkSize;
+        byte[][] result = new byte[chunks][];
+        for (int i = 0; i < chunks; i++) {
+            result[i] = new byte[chunkSize];
+            System.arraycopy(data, i * chunkSize, result[i], 0, chunkSize);
+        }
+        return result;
+    }
+
     public static byte[] xorBytes(byte[] a, byte[] b) {
         if (a.length != b.length)
             throw new IllegalArgumentException(
@@ -72,6 +84,15 @@ public class ByteUtils {
             diff |= (a[i] ^ b[i]);
         }
         return diff == 0;
+    }
+
+    public static String toHex(byte[] bytes) {
+        if (bytes == null) return "null";
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
 }

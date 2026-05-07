@@ -14,7 +14,7 @@ public class Round1Msg {
         return R_t != null ? R_t.clone() : null;
     }
 
-    public byte[] getChk_t() {
+    public byte[] getCHK_t() {
         return CHK_t != null ? CHK_t.clone() : null;
     }
 

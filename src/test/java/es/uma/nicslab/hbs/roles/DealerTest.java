@@ -65,12 +65,13 @@ public class DealerTest {
         R = new byte[n];
         rng.nextBytes(R);
 
-        // Ejecutar KK_Setup
-        result = Dealer.KK_Setup(keys, keyId, SK, R, PATH, parameter, I);
+        Dealer dealer = new Dealer(parameter, I);
+
+        result = dealer.KK_Setup(keys, keyId, SK, R, PATH);
 
         CRV CRV = result.getCRV();
 
-        System.out.println(CRV.toString());
+        // System.out.println(CRV.toString());
     }
 
     @Test

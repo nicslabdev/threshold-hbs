@@ -4,14 +4,18 @@ import es.uma.nicslab.hbs.lms.*;
 import es.uma.nicslab.hbs.model.*;
 import es.uma.nicslab.hbs.util.*;
 
+import java.util.HashSet;
+import java.util.Set;
+
 
 public class Trustee {
 
     private final TrusteeShare share; // K[t], keyId, parameter, I
     private byte[] current; // mensaje M entre Round 1 y Round 2 — null == None
+    private final Set<String> usedKeyIds = new HashSet<>();
 
     public Trustee(TrusteeShare share) {
-        this.share   = share;
+        this.share = share;
         this.current = null;
     }
 
@@ -23,7 +27,13 @@ public class Trustee {
         if (!ByteUtils.constantTimeEquals(keyID, share.getKeyId())) {
             return null; // ⊥ — keyID no corresponde al asignado en el setup
         }
+        // Comprobar si el keyID ya fue usado
+        String keyIdHex = ByteUtils.toHex(keyID);
+        if (usedKeyIds.contains(keyIdHex)) {
+            return null; // ⊥ — keyID ya usado, one-time no permite reutilización
+        }
 
+        usedKeyIds.add(keyIdHex);
         current = message.clone();
 
         return KK_GenSig1(CHKLength);
@@ -39,7 +49,7 @@ public class Trustee {
         return new Round1Msg(R_t, CHK_t);
     }
 
-    public Round2Msg KK_Sign2(Round2Request request, int pathLength) {
+    public Round2Msg KK_Sign2(byte[] R, byte[] CHK, int pathLength) {
 
         if (current == null) {
             return null;
@@ -48,11 +58,11 @@ public class Trustee {
         byte[] M = current;
         current = null;
 
-        if (!KK_Auth(request.getR(), request.getCHK_t())) {
+        if (!KK_Auth(R, CHK)) {
             return null;
         }
 
-        byte[] h = computeH(request.getR(), M);
+        byte[] h = computeH(R, M);
 
         return KK_GenSig2(h, pathLength);
     }
