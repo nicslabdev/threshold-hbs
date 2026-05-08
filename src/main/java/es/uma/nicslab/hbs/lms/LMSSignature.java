@@ -9,7 +9,7 @@ import java.util.Arrays;
 import org.bouncycastle.util.Encodable;
 import org.bouncycastle.util.io.Streams;
 
-class LMSSignature
+public class LMSSignature
     implements Encodable
 {
     private final int q;

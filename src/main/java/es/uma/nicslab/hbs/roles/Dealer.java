@@ -7,15 +7,7 @@ import es.uma.nicslab.hbs.util.*;
 
 public class Dealer {
 
-    private final LMOtsParameters parameter;
-    private final byte[] I;  // Identificador del árbol LMS
-
-    public Dealer(LMOtsParameters parameter, byte[] I) {
-        this.parameter = parameter;
-        this.I = I != null ? I.clone() : null;
-    }
-
-    public SetupResult KK_Setup(byte[][] keys, int keyId, byte[][][] SK, byte[] R, byte[][] PATH) {
+    public static SetupResult KK_Setup(byte[][] keys, int keyId, byte[][][] SK, byte[] R, byte[][] PATH) {
 
         int k = keys.length;
         int n = R.length;
@@ -71,7 +63,7 @@ public class Dealer {
 
         TrusteeShare[] shares = new TrusteeShare[k];
         for (int t = 0; t < k; t++) {
-            shares[t] = new TrusteeShare(keyIdBytes, keys[t], parameter, I);
+            shares[t] = new TrusteeShare(keyIdBytes, keys[t]);
         }
 
         return new SetupResult(crv, shares);

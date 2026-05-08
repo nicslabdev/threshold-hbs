@@ -58,16 +58,11 @@ public class DealerTest {
 
         LMOtsChain chain = LM_OTS_WITH_CHAIN.lms_ots_generateChain(otsPrivateKey);
         SK = chain.getSK();
-        LMOtsParameters parameter = chain.getParameter();
-        byte[] I = chain.getI();
 
-        // Randomizer
         R = new byte[n];
         rng.nextBytes(R);
 
-        Dealer dealer = new Dealer(parameter, I);
-
-        result = dealer.KK_Setup(keys, keyId, SK, R, PATH);
+        result = Dealer.KK_Setup(keys, keyId, SK, R, PATH);
 
         CRV CRV = result.getCRV();
 

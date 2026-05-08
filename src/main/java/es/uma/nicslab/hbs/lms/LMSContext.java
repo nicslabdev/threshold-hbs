@@ -39,10 +39,10 @@ public class LMSContext
         this.path = null;
     }
 
-    byte[] getC()
+    public byte[] getC()
     {
         return C;
-    }
+    } // QUITAR PUBLIC AL ACABAR DE HACER LAS PRUEBAS EN DEALER
 
     byte[] getQ()
     {

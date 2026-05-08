@@ -2,7 +2,7 @@ package es.uma.nicslab.hbs.lms;
 
 import org.bouncycastle.crypto.Digest;
 
-class LMS
+public class LMS
 {
     static final short D_LEAF = (short)0x8282;
     static final short D_INTR = (short)0x8383;

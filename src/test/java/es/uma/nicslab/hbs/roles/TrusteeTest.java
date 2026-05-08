@@ -52,8 +52,10 @@ public class TrusteeTest {
         chkLength = 2 * n; // k=2 trustees
         pathLength = 5 * n; // h=5 nodos en el árbol Merkle
 
-        share = new TrusteeShare(keyIdBytes, K, parameter, I);
-        trustee = new Trustee(share);
+        share = new TrusteeShare(keyIdBytes, K);
+        trustee = new Trustee(parameter, I);
+        trustee.loadShare(share);
+
         message = "mensaje de prueba".getBytes();
     }
 
@@ -84,7 +86,9 @@ public class TrusteeTest {
     @Test
     void testSign1EsDeterminista() {
         // Dos trustees con la misma clave y keyId deben producir el mismo R_t y CHK_t
-        Trustee trustee2 = new Trustee(new TrusteeShare(keyIdBytes, K, parameter, I));
+        TrusteeShare share2 = new TrusteeShare(keyIdBytes, K);
+        Trustee trustee2 = new Trustee(parameter, I);
+        trustee2.loadShare(share2);
         Round1Msg msg1 = trustee.KK_Sign1(keyIdBytes, message, chkLength);
         Round1Msg msg2 = trustee2.KK_Sign1(keyIdBytes, message, chkLength);
         assertArrayEquals(msg1.getR_t(), msg2.getR_t(), "R_t debe ser determinista");
@@ -156,7 +160,9 @@ public class TrusteeTest {
     @Test
     void testSign2EsDeterminista() {
         // Dos trustees con la misma clave deben producir el mismo Z_t y PATH_t
-        Trustee trustee2 = new Trustee(new TrusteeShare(keyIdBytes, K, parameter, I));
+        TrusteeShare share2 = new TrusteeShare(keyIdBytes, K);
+        Trustee trustee2 = new Trustee(parameter, I);
+        trustee2.loadShare(share2);
 
         byte[] R = new byte[n];
         new SecureRandom().nextBytes(R);
