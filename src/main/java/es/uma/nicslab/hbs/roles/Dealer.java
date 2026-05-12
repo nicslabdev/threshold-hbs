@@ -1,21 +1,25 @@
 package es.uma.nicslab.hbs.roles;
 
-import es.uma.nicslab.hbs.lms.LMOtsParameters;
 import es.uma.nicslab.hbs.model.*;
+import es.uma.nicslab.hbs.protocol.PublicBulletinBoard;
 import es.uma.nicslab.hbs.util.*;
-
 
 public class Dealer {
 
-    public static SetupResult KK_Setup(byte[][] keys, int keyId, byte[][][] SK, byte[] R, byte[][] PATH) {
+    private final PublicBulletinBoard board;
+
+    public Dealer(PublicBulletinBoard board) {
+        this.board = board;
+    }
+
+    public void KK_Setup(byte[][] keys, byte[] keyID, byte[][][] SK, byte[] R, byte[][] PATH) {
 
         int k = keys.length;
         int n = R.length;
-        byte[] keyIdBytes = ByteUtils.intToBytes(keyId);
 
         byte[][] CHK = new byte[k][];
         for (int t = 0; t < k; t++) {
-            CHK[t] = PRF.evalAUTH(keys[t], keyIdBytes, R, n);
+            CHK[t] = PRF.evalAUTH(keys[t], keyID, R, n);
         }
 
         byte[] CHKconcat = ByteUtils.concat(CHK);
@@ -28,21 +32,21 @@ public class Dealer {
 
         for (int t = 0; t < k; t++) {
             // R_t = PRF^R_{K[t]}(KeyID, n)
-            sharesR[t] = PRF.evalR(keys[t], keyIdBytes, n);
+            sharesR[t] = PRF.evalR(keys[t], keyID, n);
 
             // CHK_t ← PRF^CHK_{K[t]}(KeyID, |CHK|)
-            sharesCHK[t] = PRF.evalCHK(keys[t], keyIdBytes, CHKconcat.length);
+            sharesCHK[t] = PRF.evalCHK(keys[t], keyID, CHKconcat.length);
 
             // PATH_t ← PRF^PATH_{K[t]}(KeyID, |PATH|)
-            sharesPATH[t] = PRF.evalPATH(keys[t], keyIdBytes, PATHconcat.length);
+            sharesPATH[t] = PRF.evalPATH(keys[t], keyID, PATHconcat.length);
 
-            // SK_t[i][j] ← PRF^Chain_{K[t]}(KeyID, i, j, n)
+            // SK_t[i][j] ← PRF^CHAIN_{K[t]}(KeyID, i, j, n)
             int chains = SK.length;
             int steps  = SK[0].length;
             sharesSK[t] = new byte[chains][steps][];
             for (int i = 0; i < chains; i++) {
                 for (int j = 0; j < steps; j++) {
-                    sharesSK[t][i][j] = PRF.evalCHAIN(keys[t], keyIdBytes, i, j, n);
+                    sharesSK[t][i][j] = PRF.evalCHAIN(keys[t], keyID, i, j, n);
                 }
             }
         }
@@ -61,12 +65,7 @@ public class Dealer {
 
         CRV crv = new CRV(crvR, crvCHK, crvPATH, crvSK);
 
-        TrusteeShare[] shares = new TrusteeShare[k];
-        for (int t = 0; t < k; t++) {
-            shares[t] = new TrusteeShare(keyIdBytes, keys[t]);
-        }
-
-        return new SetupResult(crv, shares);
+        board.publishCRV(crv);
     }
 
 }

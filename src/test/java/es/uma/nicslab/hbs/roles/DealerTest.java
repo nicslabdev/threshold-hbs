@@ -2,6 +2,7 @@ package es.uma.nicslab.hbs.roles;
 
 import es.uma.nicslab.hbs.lms.*;
 import es.uma.nicslab.hbs.model.*;
+import es.uma.nicslab.hbs.protocol.PublicBulletinBoard;
 import es.uma.nicslab.hbs.util.*;
 
 import org.bouncycastle.crypto.AsymmetricCipherKeyPair;
@@ -19,19 +20,16 @@ public class DealerTest {
     private byte[][] PATH;
     private byte[][][] SK;
     private byte[][] keys;
-    private int keyId;
     private int n;
     private int k;
     private byte[] keyIdBytes;
-    private SetupResult result;
+    private PublicBulletinBoard board;
 
     @BeforeEach
-    void setup() throws Exception {
+    void setup() {
 
         SecureRandom rng = new SecureRandom();
         k = 2;
-        keyId = 0;
-        keyIdBytes = ByteUtils.intToBytes(keyId);
 
         // Generar claves PRF de los trustees
         keys = new byte[k][32];
@@ -48,6 +46,13 @@ public class DealerTest {
         gen.init(genParams);
         AsymmetricCipherKeyPair keyPair = gen.generateKeyPair();
         LMSPrivateKeyParameters lmsPrivate = (LMSPrivateKeyParameters) keyPair.getPrivate();
+        LMSPublicKeyParameters lmsPublic = (LMSPublicKeyParameters) keyPair.getPublic();
+
+        LMOtsParameters parameter = lmsPrivate.getOtsParameters();
+        byte[] I = lmsPrivate.getI();
+
+        int keyId = lmsPrivate.getIndex();
+        keyIdBytes = ByteUtils.intToBytes(keyId);
 
         // Obtener clave OTS y generar cadena SK completa
         LMOtsPrivateKey otsPrivateKey = lmsPrivate.getCurrentOTSKey();
@@ -62,9 +67,12 @@ public class DealerTest {
         R = new byte[n];
         rng.nextBytes(R);
 
-        result = Dealer.KK_Setup(keys, keyId, SK, R, PATH);
+        board = new PublicBulletinBoard(lmsPublic, parameter, I);
 
-        CRV CRV = result.getCRV();
+        Dealer dealer = new Dealer(board);
+        dealer.KK_Setup(keys, keyIdBytes, SK, R, PATH);
+
+        CRV CRV = board.getCRV();
 
         // System.out.println(CRV.toString());
     }
@@ -78,7 +86,7 @@ public class DealerTest {
         }
 
         // CRV.R ⊕ sharesR[0] ⊕ ... ⊕ sharesR[k-1] == R original
-        byte[] reconstructed = ByteUtils.xorAll(result.getCRV().getR(), sharesR);
+        byte[] reconstructed = ByteUtils.xorAll(board.getCRV().getR(), sharesR);
         assertArrayEquals(R, reconstructed, "R no se reconstruye correctamente");
     }
 
@@ -98,7 +106,7 @@ public class DealerTest {
         }
 
         // CRV.CHK ⊕ sharesCHK[0] ⊕ ... ⊕ sharesCHK[k-1] == CHKconcat original
-        byte[] reconstructed = ByteUtils.xorAll(result.getCRV().getCHK(), sharesCHK);
+        byte[] reconstructed = ByteUtils.xorAll(board.getCRV().getCHK(), sharesCHK);
         assertArrayEquals(CHKconcat, reconstructed, "CHK no se reconstruye correctamente");
     }
 
@@ -113,7 +121,7 @@ public class DealerTest {
         }
 
         // CRV.PATH ⊕ sharesPATH[0] ⊕ ... ⊕ sharesPATH[k-1] == PATHconcat original
-        byte[] reconstructed = ByteUtils.xorAll(result.getCRV().getPATH(), sharesPATH);
+        byte[] reconstructed = ByteUtils.xorAll(board.getCRV().getPATH(), sharesPATH);
         assertArrayEquals(PATHconcat, reconstructed, "PATH no se reconstruye correctamente");
     }
 
@@ -133,7 +141,7 @@ public class DealerTest {
         }
 
         // Para cada (i,j): CRV.SK[i][j] ⊕ sharesSK[0][i][j] ⊕ ... ⊕ sharesSK[k-1][i][j] == SK[i][j] original
-        byte[][][] crvSK = result.getCRV().getSK();
+        byte[][][] crvSK = board.getCRV().getSK();
         for (int i = 0; i < chains; i++) {
             for (int j = 0; j < steps; j++) {
                 byte[] reconstructed = crvSK[i][j].clone();
@@ -146,15 +154,4 @@ public class DealerTest {
         }
     }
 
-    @Test
-    void testTrusteeSharesCount() {
-        assertEquals(k, result.getShares().length, "Número de shares incorrecto");
-    }
-
-    @Test
-    void testTrusteeShareKeyId() {
-        for (TrusteeShare share : result.getShares()) {
-            assertArrayEquals(keyIdBytes, share.getKeyId(), "KeyID incorrecto en TrusteeShare");
-        }
-    }
 }

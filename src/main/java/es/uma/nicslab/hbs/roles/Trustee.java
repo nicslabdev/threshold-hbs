@@ -2,6 +2,7 @@ package es.uma.nicslab.hbs.roles;
 
 import es.uma.nicslab.hbs.lms.*;
 import es.uma.nicslab.hbs.model.*;
+import es.uma.nicslab.hbs.protocol.PublicBulletinBoard;
 import es.uma.nicslab.hbs.util.*;
 
 import java.util.HashSet;
@@ -10,57 +11,49 @@ import java.util.Set;
 
 public class Trustee {
 
-    private TrusteeShare share; // K[t], keyId
+    private final byte[] K; // clave secreta del trustee de la PRF
+    private byte[] keyID;
     private byte[] current; // mensaje M entre Round 1 y Round 2 — null == None
-    private final Set<String> usedKeyIds = new HashSet<>();
-    private final LMOtsParameters parameter;
-    private final byte[] I;  // Identificador del árbol LMS
+    private final Set<String> usedKeyIDs = new HashSet<>();
+    private final PublicBulletinBoard board;
 
-    public Trustee(LMOtsParameters parameter, byte[] I) {
-        this.share = null;
+    public Trustee(byte[] K, PublicBulletinBoard board) {
+        this.keyID = null;
         this.current = null;
-        this.parameter = parameter;
-        this.I = I != null ? I.clone() : null;
+        this.board = board;
+        this.K = K != null ? K.clone() : null;
     }
 
-    public void loadShare(TrusteeShare share) {
-        this.share = share;
-    }
-
-    public Round1Msg KK_Sign1(byte[] keyID, byte[] message, int CHKLength) {
+    public Round1Msg KK_Sign1(byte[] keyID, byte[] message) {
 
         if (current != null) {
             return null; // ⊥ — ya hay una firma en curso
         }
-        if (share == null) {
-            return null;
-        }
-        if (!ByteUtils.constantTimeEquals(keyID, share.getKeyId())) {
-            return null; // ⊥ — keyID no corresponde al asignado en el setup
-        }
-        // Comprobar si el keyID ya fue usado
+
         String keyIdHex = ByteUtils.toHex(keyID);
-        if (usedKeyIds.contains(keyIdHex)) {
+        if (usedKeyIDs.contains(keyIdHex)) {
             return null; // ⊥ — keyID ya usado, one-time no permite reutilización
         }
 
-        usedKeyIds.add(keyIdHex);
+        this.keyID = keyID;
+
+        usedKeyIDs.add(keyIdHex);
         current = message.clone();
 
-        return KK_GenSig1(CHKLength);
+        return KK_GenSig1();
     }
 
-    private Round1Msg KK_GenSig1(int CHKLength) {
+    private Round1Msg KK_GenSig1() {
 
-        int n = parameter.getN();
+        int n = board.getParameter().getN();
 
-        byte[] R_t = PRF.evalR(share.getK(), share.getKeyId(), n);
-        byte[] CHK_t = PRF.evalCHK(share.getK(), share.getKeyId(), CHKLength);
+        byte[] R_t = PRF.evalR(K, keyID, n);
+        byte[] CHK_t = PRF.evalCHK(K, keyID, board.getCRV().getCHK().length);
 
         return new Round1Msg(R_t, CHK_t);
     }
 
-    public Round2Msg KK_Sign2(byte[] R, byte[] CHK, int pathLength) {
+    public Round2Msg KK_Sign2(byte[] R, byte[] CHK) {
 
         if (current == null) {
             return null;
@@ -75,37 +68,39 @@ public class Trustee {
 
         byte[] h = computeH(R, M);
 
-        return KK_GenSig2(h, pathLength);
+        return KK_GenSig2(h);
     }
 
     private boolean KK_Auth(byte[] R, byte[] CHK_t) {
-        int n = parameter.getN();
-        byte[] expected = PRF.evalAUTH(share.getK(), share.getKeyId(), R, n);
+        int n = board.getParameter().getN();
+        byte[] expected = PRF.evalAUTH(K, keyID, R, n);
         return ByteUtils.constantTimeEquals(expected, CHK_t);
     }
 
-    private Round2Msg KK_GenSig2(byte[] h, int pathLength) {
+    private Round2Msg KK_GenSig2(byte[] h) {
 
-        int n = parameter.getN();
-        int chains = parameter.getP();
-        int steps = (1 << parameter.getW()); // 2^w
+        int n = board.getParameter().getN();
+        int chains = board.getParameter().getP();
+        int steps = (1 << board.getParameter().getW()); // 2^w
 
         byte[][][] SK_t = new byte[chains][steps][];
         for (int i = 0; i < chains; i++) {
             for (int j = 0; j < steps; j++) {
-                SK_t[i][j] = PRF.evalCHAIN(share.getK(), share.getKeyId(), i, j, n);
+                SK_t[i][j] = PRF.evalCHAIN(K, keyID, i, j, n);
             }
         }
 
-        byte[] Z_t = LM_OTS_WITH_CHAIN.lm_ots_generate_ZFromSK(h, SK_t, parameter);
-        byte[] PATH_t = PRF.evalPATH(share.getK(), share.getKeyId(), pathLength);
+        byte[] Z_t = LM_OTS_WITH_CHAIN.lm_ots_generate_ZFromSK(h, SK_t, board.getParameter());
+        byte[] PATH_t = PRF.evalPATH(K, keyID, board.getCRV().getPATH().length);
+
+        keyID = null;
 
         return new Round2Msg(Z_t, PATH_t);
     }
 
     private byte[] computeH(byte[] R, byte[] M) {
-        int q = ByteUtils.bytesToInt(share.getKeyId());
-        return LMSHashUtils.computeH(parameter, I, q, R, M);
+        int q = ByteUtils.bytesToInt(keyID);
+        return LMSHashUtils.computeH(board.getParameter(), board.getI(), q, R, M);
     }
 
 }
