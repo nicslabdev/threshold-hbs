@@ -27,7 +27,7 @@ public class AggregatorTest {
     PublicBulletinBoard board;
 
     @BeforeEach
-    void setup() throws Exception {
+    void setup() {
 
         SecureRandom rng = new SecureRandom();
         k = 2;
@@ -120,13 +120,5 @@ public class AggregatorTest {
         assertNotNull(sig);
         assertArrayEquals(R, sig.getR(), "R reconstruido debe coincidir con R original del dealer");
     }
-
-    /* @Test
-    void testDevuelveNullSiTrusteeSign1Falla() {
-        // Trustee sin share cargado → KK_Sign1 devuelve null
-        trustees[0] = new Trustee(parameter, CRV.getR()); // I incorrecto — share null
-        ThresholdSignature sig = aggregator.KK_Aggregator_Sign(message, keyIdBytes, CRV, trustees);
-        assertNull(sig, "Debe devolver null si algún trustee falla en Round 1");
-    } */
 
 }
