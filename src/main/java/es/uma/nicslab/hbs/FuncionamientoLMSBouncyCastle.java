@@ -25,6 +25,8 @@ public class FuncionamientoLMSBouncyCastle {
         LMSPrivateKeyParameters privateKey = (LMSPrivateKeyParameters) keyPair.getPrivate();
         LMSPublicKeyParameters publicKey   = (LMSPublicKeyParameters)  keyPair.getPublic();
 
+        System.out.println("Número máximo de firmas: " + privateKey.getIndexLimit());
+
         // Firmar un mensaje
         System.out.println("Mensaje a firmar: Hola mundo threshold HBS");
         byte[] message = "Hola mundo lms HBS".getBytes();

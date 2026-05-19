@@ -8,19 +8,21 @@ import es.uma.nicslab.hbs.roles.Trustee;
 
 public class PublicBulletinBoard {
 
-    private CRV CRV;
+    private CRV[] CRV;
     private final LMSPublicKeyParameters publicKey;
     private Trustee[] trustees;
     private final LMOtsParameters parameter;
     private final byte[] I;  // Identificador del árbol LMS
+    private final int[][] CL;
 
-    public PublicBulletinBoard(LMSPublicKeyParameters publicKey, LMOtsParameters parameter, byte[] I) {
+    public PublicBulletinBoard(LMSPublicKeyParameters publicKey, LMOtsParameters parameter, byte[] I, int[][] CL) {
         this.publicKey = publicKey;
         this.parameter = parameter;
         this.I = I != null ? I.clone() : null;
+        this.CL = CL;
     }
 
-    public void publishCRV(CRV CRV) {
+    public void publishCRV(CRV[] CRV) {
         this.CRV = CRV;
     }
 
@@ -28,8 +30,12 @@ public class PublicBulletinBoard {
         this.trustees = trustees;
     }
 
-    public CRV getCRV() {
+    public CRV[] getCRV() {
         return CRV;
+    }
+
+    public CRV getCRV(int i) {
+        return CRV[i];
     }
 
     public LMSPublicKeyParameters getPublicKey() {
@@ -46,6 +52,10 @@ public class PublicBulletinBoard {
 
     public byte[] getI() {
         return I;
+    }
+
+    public int[][] getCL() {
+        return CL;
     }
 
 }

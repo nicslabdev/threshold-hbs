@@ -1,6 +1,7 @@
 package es.uma.nicslab.hbs.lms;
 
 import es.uma.nicslab.hbs.model.ThresholdSignature;
+import es.uma.nicslab.hbs.protocol.PublicBulletinBoard;
 
 import java.io.IOException;
 
@@ -36,4 +37,22 @@ public class LMSSerializer {
 
         return lmsSig.getEncoded();
     }
+
+    /**
+     * Método estático de conveniencia para el ProtocolRunner.
+     * Extrae los parámetros OTS y LMS directamente del PublicBulletinBoard.
+     *
+     * @param sig    firma threshold a serializar
+     * @param board  tablón público con los parámetros del árbol LMS
+     * @param keyId  índice OTS (q) — identifica la hoja del árbol
+     */
+    public static byte[] serialize(ThresholdSignature sig,
+                                   PublicBulletinBoard board,
+                                   int keyId) throws IOException {
+        LMOtsParameters otsParams = board.getParameter();
+        LMSigParameters lmsParams = board.getPublicKey().getSigParameters();
+        LMSSerializer serializer  = new LMSSerializer(otsParams, lmsParams);
+        return serializer.serialize(sig, keyId);
+    }
+
 }

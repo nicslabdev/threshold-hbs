@@ -15,6 +15,7 @@ public class Trustee {
     private byte[] keyID;
     private byte[] current; // mensaje M entre Round 1 y Round 2 — null == None
     private final Set<String> usedKeyIDs = new HashSet<>();
+    private final Set<Integer> keylist = new HashSet<>();
     private final PublicBulletinBoard board;
 
     public Trustee(byte[] K, PublicBulletinBoard board) {
@@ -22,6 +23,40 @@ public class Trustee {
         this.current = null;
         this.board = board;
         this.K = K != null ? K.clone() : null;
+    }
+
+    public void TrusteeSetup(int trusteeIndex, int[][] CL) {
+        for (int keyID = 0; keyID < CL.length; keyID++) {
+            for (int member : CL[keyID]) {
+                if (member == trusteeIndex) {
+                    keylist.add(keyID);
+                    break;
+                }
+            }
+        }
+    }
+
+    public Round1Msg ShardSign1(byte[] keyID, byte[] message) {
+
+        int keyIDInt = ByteUtils.bytesToInt(keyID);
+
+        if (!keylist.contains(keyIDInt)) {
+            return null;
+        }
+
+        if (current != null) {
+            return null;
+        }
+
+        keylist.remove(keyIDInt);
+        this.keyID = keyID;
+        this.current = message.clone();
+
+        return KK_GenSig1();
+    }
+
+    public Round2Msg ShardSign2(byte[] R, byte[] CHK) {
+        return KK_Sign2(R, CHK);
     }
 
     public Round1Msg KK_Sign1(byte[] keyID, byte[] message) {
@@ -48,7 +83,7 @@ public class Trustee {
         int n = board.getParameter().getN();
 
         byte[] R_t = PRF.evalR(K, keyID, n);
-        byte[] CHK_t = PRF.evalCHK(K, keyID, board.getCRV().getCHK().length);
+        byte[] CHK_t = PRF.evalCHK(K, keyID, board.getCRV(ByteUtils.bytesToInt(keyID)).getCHK().length);
 
         return new Round1Msg(R_t, CHK_t);
     }
@@ -91,7 +126,7 @@ public class Trustee {
         }
 
         byte[] Z_t = LM_OTS_WITH_CHAIN.lm_ots_generate_ZFromSK(h, SK_t, board.getParameter());
-        byte[] PATH_t = PRF.evalPATH(K, keyID, board.getCRV().getPATH().length);
+        byte[] PATH_t = PRF.evalPATH(K, keyID, board.getCRV(ByteUtils.bytesToInt(keyID)).getPATH().length);
 
         keyID = null;
 

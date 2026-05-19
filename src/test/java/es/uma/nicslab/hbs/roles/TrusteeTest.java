@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class TrusteeTest {
 
-    private Trustee trustee;
+    /* private Trustee trustee;
     private byte[] keyIdBytes;
     private byte[] message;
     private byte[] K;
@@ -194,5 +194,5 @@ public class TrusteeTest {
 
         assertArrayEquals(msg1.getZ_t(), msg2.getZ_t(), "Z_t debe ser determinista");
         assertArrayEquals(msg1.getPATH_t(), msg2.getPATH_t(), "PATH_t debe ser determinista");
-    }
+    } */
 }

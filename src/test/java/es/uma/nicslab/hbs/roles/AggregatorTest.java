@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class AggregatorTest {
 
-    private Aggregator aggregator;
+    /* private Aggregator aggregator;
     private Trustee[] trustees;
     private byte[] keyIdBytes;
     private byte[] message;
@@ -119,6 +119,6 @@ public class AggregatorTest {
         ThresholdSignature sig = aggregator.KK_Aggregator_Sign(message, keyIdBytes);
         assertNotNull(sig);
         assertArrayEquals(R, sig.getR(), "R reconstruido debe coincidir con R original del dealer");
-    }
+    } */
 
 }

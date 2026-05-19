@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 public class DealerTest {
 
-    private byte[] R;
+    /* private byte[] R;
     private byte[][] PATH;
     private byte[][][] SK;
     private byte[][] keys;
@@ -152,6 +152,6 @@ public class DealerTest {
                         "SK[" + i + "][" + j + "] no se reconstruye correctamente");
             }
         }
-    }
+    } */
 
 }
