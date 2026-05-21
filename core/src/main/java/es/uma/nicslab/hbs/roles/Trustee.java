@@ -52,10 +52,6 @@ public class Trustee {
         return KK_GenSig1(n, lengthCHK);
     }
 
-    public Round2Msg ShardSign2(byte[] R, byte[] CHK, LMOtsParameters parameters, int lengthPATH, byte[] I) {
-        return KK_Sign2(R, CHK, parameters, lengthPATH, I);
-    }
-
     public Round1Msg KK_Sign1(byte[] keyID, byte[] message, int n, int lengthCHK) {
 
         if (current != null) {
@@ -81,6 +77,10 @@ public class Trustee {
         byte[] CHK_t = PRF.evalCHK(K, keyID, lengthCHK);
 
         return new Round1Msg(R_t, CHK_t);
+    }
+
+    public Round2Msg ShardSign2(byte[] R, byte[] CHK, LMOtsParameters parameters, int lengthPATH, byte[] I) {
+        return KK_Sign2(R, CHK, parameters, lengthPATH, I);
     }
 
     public Round2Msg KK_Sign2(byte[] R, byte[] CHK, LMOtsParameters parameters, int lengthPATH, byte[] I) {

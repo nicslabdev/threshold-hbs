@@ -1,0 +1,46 @@
+syntax = "proto3";
+package hbs;
+option java_package = "es.uma.nicslab.hbs.grpc";
+
+service TrusteeService {
+  rpc Setup (SetupRequest) returns (SetupResponse);
+  rpc ShardSign1 (Sign1Request) returns (Sign1Response);
+  rpc ShardSign2 (Sign2Request) returns (Sign2Response);
+}
+
+// --- Setup (una vez, en tiempo de dealer) ---
+message SetupRequest {
+  bytes prf_key = 1; // K[t], 32 bytes
+  string cl_cid = 2; // CID de la coalition list en el CAS
+  string cas_url = 3;
+}
+message SetupResponse {
+  bool ok = 1;
+}
+
+// --- Ronda 1 ---
+message Sign1Request {
+  bytes key_id = 1;
+  bytes message = 2;
+  int32 n = 3;
+  int32 length_chk = 4;
+}
+message Sign1Response {
+  bytes r_t = 1;
+  bytes chk_t = 2;
+  bool abort = 3;
+}
+
+// --- Ronda 2 ---
+message Sign2Request {
+  bytes r = 1;
+  bytes chk_i = 2;
+  int32 lmots_param_type = 3;  // getParametersForType() en el trustee
+  int32 length_path = 4;
+  bytes I = 5;
+}
+message Sign2Response {
+  bytes path_t = 1;
+  bytes z_t = 2;
+  bool abort = 3;
+}
