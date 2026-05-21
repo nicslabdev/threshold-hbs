@@ -32,16 +32,13 @@ public class Dealer {
             );
         }
 
-        LMOtsParameters otsParameters = lmsPrivate.getOtsParameters();
-        byte[] I = lmsPrivate.getI();
-
-        PublicBulletinBoard board = new PublicBulletinBoard(lmsPublic, otsParameters, I, CL);
+        PublicBulletinBoard board = new PublicBulletinBoard(lmsPublic, CL);
 
         byte[][] K = new byte[k][PRF_KEY_LENGTH];
         Trustee[] trustees = new Trustee[k];
         for (int i=0; i<k; i++) {
             rng.nextBytes(K[i]);
-            trustees[i] = new Trustee(K[i], board);
+            trustees[i] = new Trustee(K[i]);
         }
         board.publishTrustees(trustees);
 

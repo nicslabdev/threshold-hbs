@@ -2,7 +2,6 @@ package es.uma.nicslab.hbs.roles;
 
 import es.uma.nicslab.hbs.lms.*;
 import es.uma.nicslab.hbs.model.*;
-import es.uma.nicslab.hbs.protocol.PublicBulletinBoard;
 import es.uma.nicslab.hbs.util.*;
 
 import java.util.HashSet;
@@ -15,13 +14,11 @@ public class Trustee {
     private byte[] keyID;
     private byte[] current; // mensaje M entre Round 1 y Round 2 — null == None
     private final Set<String> usedKeyIDs = new HashSet<>();
-    private final Set<Integer> keylist = new HashSet<>();
-    private final PublicBulletinBoard board;
+    private final Set<Integer> keyList = new HashSet<>();
 
-    public Trustee(byte[] K, PublicBulletinBoard board) {
+    public Trustee(byte[] K) {
         this.keyID = null;
         this.current = null;
-        this.board = board;
         this.K = K != null ? K.clone() : null;
     }
 
@@ -29,18 +26,18 @@ public class Trustee {
         for (int keyID = 0; keyID < CL.length; keyID++) {
             for (int member : CL[keyID]) {
                 if (member == trusteeIndex) {
-                    keylist.add(keyID);
+                    keyList.add(keyID);
                     break;
                 }
             }
         }
     }
 
-    public Round1Msg ShardSign1(byte[] keyID, byte[] message) {
+    public Round1Msg ShardSign1(byte[] keyID, byte[] message, int n, int lengthCHK) {
 
         int keyIDInt = ByteUtils.bytesToInt(keyID);
 
-        if (!keylist.contains(keyIDInt)) {
+        if (!keyList.contains(keyIDInt)) {
             return null;
         }
 
@@ -48,18 +45,18 @@ public class Trustee {
             return null;
         }
 
-        keylist.remove(keyIDInt);
+        keyList.remove(keyIDInt);
         this.keyID = keyID;
         this.current = message.clone();
 
-        return KK_GenSig1();
+        return KK_GenSig1(n, lengthCHK);
     }
 
-    public Round2Msg ShardSign2(byte[] R, byte[] CHK) {
-        return KK_Sign2(R, CHK);
+    public Round2Msg ShardSign2(byte[] R, byte[] CHK, LMOtsParameters parameters, int lengthPATH, byte[] I) {
+        return KK_Sign2(R, CHK, parameters, lengthPATH, I);
     }
 
-    public Round1Msg KK_Sign1(byte[] keyID, byte[] message) {
+    public Round1Msg KK_Sign1(byte[] keyID, byte[] message, int n, int lengthCHK) {
 
         if (current != null) {
             return null; // ⊥ — ya hay una firma en curso
@@ -75,20 +72,18 @@ public class Trustee {
         usedKeyIDs.add(keyIdHex);
         current = message.clone();
 
-        return KK_GenSig1();
+        return KK_GenSig1(n, lengthCHK);
     }
 
-    private Round1Msg KK_GenSig1() {
-
-        int n = board.getParameter().getN();
+    private Round1Msg KK_GenSig1(int n, int lengthCHK) {
 
         byte[] R_t = PRF.evalR(K, keyID, n);
-        byte[] CHK_t = PRF.evalCHK(K, keyID, board.getCRV(ByteUtils.bytesToInt(keyID)).getCHK().length);
+        byte[] CHK_t = PRF.evalCHK(K, keyID, lengthCHK);
 
         return new Round1Msg(R_t, CHK_t);
     }
 
-    public Round2Msg KK_Sign2(byte[] R, byte[] CHK) {
+    public Round2Msg KK_Sign2(byte[] R, byte[] CHK, LMOtsParameters parameters, int lengthPATH, byte[] I) {
 
         if (current == null) {
             return null;
@@ -97,26 +92,25 @@ public class Trustee {
         byte[] M = current;
         current = null;
 
-        if (!KK_Auth(R, CHK)) {
+        if (!KK_Auth(R, CHK, parameters.getN())) {
             return null;
         }
 
-        byte[] h = computeH(R, M);
+        byte[] h = computeH(R, M, parameters, I);
 
-        return KK_GenSig2(h);
+        return KK_GenSig2(h, parameters, lengthPATH);
     }
 
-    private boolean KK_Auth(byte[] R, byte[] CHK_t) {
-        int n = board.getParameter().getN();
+    private boolean KK_Auth(byte[] R, byte[] CHK_t, int n) {
         byte[] expected = PRF.evalAUTH(K, keyID, R, n);
         return ByteUtils.constantTimeEquals(expected, CHK_t);
     }
 
-    private Round2Msg KK_GenSig2(byte[] h) {
+    private Round2Msg KK_GenSig2(byte[] h,LMOtsParameters parameters, int lengthPATH) {
 
-        int n = board.getParameter().getN();
-        int chains = board.getParameter().getP();
-        int steps = (1 << board.getParameter().getW()); // 2^w
+        int n = parameters.getN();
+        int chains = parameters.getP();
+        int steps = (1 << parameters.getW()); // 2^w
 
         byte[][][] SK_t = new byte[chains][steps][];
         for (int i = 0; i < chains; i++) {
@@ -125,17 +119,17 @@ public class Trustee {
             }
         }
 
-        byte[] Z_t = LM_OTS_WITH_CHAIN.lm_ots_generate_ZFromSK(h, SK_t, board.getParameter());
-        byte[] PATH_t = PRF.evalPATH(K, keyID, board.getCRV(ByteUtils.bytesToInt(keyID)).getPATH().length);
+        byte[] Z_t = LM_OTS_WITH_CHAIN.lm_ots_generate_ZFromSK(h, SK_t, parameters);
+        byte[] PATH_t = PRF.evalPATH(K, keyID, lengthPATH);
 
         keyID = null;
 
         return new Round2Msg(Z_t, PATH_t);
     }
 
-    private byte[] computeH(byte[] R, byte[] M) {
+    private byte[] computeH(byte[] R, byte[] M, LMOtsParameters parameters, byte[] I) {
         int q = ByteUtils.bytesToInt(keyID);
-        return LMSHashUtils.computeH(board.getParameter(), board.getI(), q, R, M);
+        return LMSHashUtils.computeH(parameters, I, q, R, M);
     }
 
 }

@@ -46,10 +46,8 @@ public class LMSSerializer {
      * @param board  tablón público con los parámetros del árbol LMS
      * @param keyId  índice OTS (q) — identifica la hoja del árbol
      */
-    public static byte[] serialize(ThresholdSignature sig,
-                                   PublicBulletinBoard board,
-                                   int keyId) throws IOException {
-        LMOtsParameters otsParams = board.getParameter();
+    public static byte[] serialize(ThresholdSignature sig, PublicBulletinBoard board, int keyId) throws IOException {
+        LMOtsParameters otsParams = board.getPublicKey().getOtsParameters();
         LMSigParameters lmsParams = board.getPublicKey().getSigParameters();
         LMSSerializer serializer  = new LMSSerializer(otsParams, lmsParams);
         return serializer.serialize(sig, keyId);
