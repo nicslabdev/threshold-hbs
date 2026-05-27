@@ -6,9 +6,9 @@ import es.uma.nicslab.hbs.roles.*;
 
 public class ProtocolRunner {
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
 
-        System.out.println("=== Threshold-HBS — Sección 4: Distributed Signing Protocol ===\n");
+        System.out.println("Threshold-HBS\n");
 
         // ── Parámetros LMS ────────────────────────────────────────────────────
         // LMS_SHA256_M32_H5  → árbol de altura 5 → 2^5 = 32 KeyIDs disponibles
@@ -22,39 +22,39 @@ public class ProtocolRunner {
         // 3 trustees (n=3), coaliciones de tamaño 2 (k=2)
         // 32 KeyIDs en total (altura 5 → 2^5)
         // Rotamos las coaliciones: {0,1}, {1,2}, {0,2}, {0,1}, ...
-        int n = 3;  // número total de trustees
-        int indexLimit = 32; // 2^h = 2^5
+        int n = 3;
+        int indexLimit = 32;
 
-        int[][] CL = new int[indexLimit][];
+        int[][] coalitions = new int[indexLimit][];
         for (int keyID = 0; keyID < indexLimit; keyID++) {
             switch (keyID % 3) {
-                case 0 -> CL[keyID] = new int[]{0, 1};
-                case 1 -> CL[keyID] = new int[]{1, 2};
-                case 2 -> CL[keyID] = new int[]{0, 2};
+                case 0 -> coalitions[keyID] = new int[]{0, 1};
+                case 1 -> coalitions[keyID] = new int[]{1, 2};
+                case 2 -> coalitions[keyID] = new int[]{0, 2};
             }
         }
 
-        // ── Setup ─────────────────────────────────────────────────────────────
-        System.out.println("[Setup] Ejecutando ShardSetup...");
-        Dealer dealer = new Dealer();
-        SetupDealer setup = dealer.ShardSetup(n, CL, lmsParams);
+        // ── CAS en memoria (sin red) ──────────────────────────────────────────
+        InMemoryCAS cas = new InMemoryCAS();
 
-        PublicBulletinBoard board = setup.getBoard();
+        // ── Setup ─────────────────────────────────────────────────────────────
+        System.out.println("[Setup] Ejecutando setup...");
+        Dealer dealer = new Dealer(cas);
+        SetupDealer setup = dealer.setup(n, coalitions, lmsParams);
+
         Trustee[] trustees = setup.getTrustees();
 
-        // TrusteeSetup: cada trustee construye su keylist a partir de CL
+        System.out.println("[Setup] Completado. Trustees: " + n + ", KeyIDs disponibles: " + indexLimit);
         for (int t = 0; t < n; t++) {
-            trustees[t].TrusteeSetup(t, CL);
-        }
-
-        System.out.println("[Setup] Completado. Trustees: " + n +
-                ", KeyIDs disponibles: " + indexLimit);
-        for (int t = 0; t < n; t++) {
-            System.out.println("  Trustee " + t + " → coaliciones: " + coalitionsOf(t, CL));
+            System.out.println("  Trustee " + t + " → coaliciones: " + coalitionsOf(t, coalitions));
         }
 
         // ── Aggregator ────────────────────────────────────────────────────────
-        Aggregator aggregator = new Aggregator(board);
+        Aggregator aggregator = new Aggregator(
+                setup.getLmsPublicKey(),
+                cas,
+                setup.getClCid()
+        );
 
         // ── Firma con distintas coaliciones ───────────────────────────────────
         byte[][] messages = {
@@ -67,20 +67,19 @@ public class ProtocolRunner {
 
         for (int keyID = 0; keyID < messages.length; keyID++) {
 
-            int[] coalition = CL[keyID];
+            int[] coalition = coalitions[keyID];
             System.out.printf("%n[KeyID=%d] Coalición: {%s} — Mensaje: \"%s\"%n",
                     keyID, coalitionStr(coalition), new String(messages[keyID]));
 
-            ThresholdSignature sig = aggregator.AggregatorSign(messages[keyID], keyID);
+            ThresholdSignature sig = aggregator.aggregatorSign(messages[keyID], keyID, trustees);
 
             if (sig == null) {
-                System.out.println("  ✗ AggregatorSign devolvió ⊥");
+                System.out.println("  ✗ aggregatorSign devolvió ⊥");
                 allOk = false;
                 continue;
             }
 
-            // Verificar la firma con la clave pública LMS estándar
-            boolean valid = verifySignature(board, sig, messages[keyID], keyID);
+            boolean valid = verifySignature(setup, sig, messages[keyID], keyID);
 
             if (valid) {
                 System.out.println("  ✓ Firma verificada correctamente (indistinguible de LMS estándar)");
@@ -92,7 +91,8 @@ public class ProtocolRunner {
 
         // ── Prueba de protección one-time ─────────────────────────────────────
         System.out.println("\n[One-Time] Intentando reusar KeyID=0 (debe devolver ⊥)...");
-        ThresholdSignature reuse = aggregator.AggregatorSign("reuse attack".getBytes(), 0);
+        ThresholdSignature reuse = aggregator.aggregatorSign(
+                "reuse attack".getBytes(), 0, trustees);
         if (reuse == null) {
             System.out.println("  ✓ Reutilización rechazada correctamente (⊥)");
         } else {
@@ -101,20 +101,26 @@ public class ProtocolRunner {
         }
 
         // ── Resultado final ───────────────────────────────────────────────────
-        System.out.println("\n=== Resultado: " + (allOk ? "TODOS LOS TESTS PASARON ✓" : "ALGÚN TEST FALLÓ ✗") + " ===");
+        System.out.println("\n=== Resultado: " +
+                (allOk ? "TODOS LOS TESTS PASARON ✓" : "ALGÚN TEST FALLÓ ✗") +
+                " ===");
     }
 
+    // -------------------------------------------------------------------------
+    // Auxiliares
+    // -------------------------------------------------------------------------
+
     /**
-     * Verifica la ThresholdSignature contra la clave pública LMS del board.
+     * Verifica la ThresholdSignature contra la clave pública LMS del setup.
      * Serializa la firma al formato RFC 8554 y usa el verificador de Bouncy Castle.
      */
-    private static boolean verifySignature(PublicBulletinBoard board,
+    private static boolean verifySignature(SetupDealer setup,
                                            ThresholdSignature sig,
                                            byte[] message,
                                            int keyID) {
         try {
-            byte[] sigBytes = LMSSerializer.serialize(sig, board, keyID);
-            LMSPublicKeyParameters pub = board.getPublicKey();
+            byte[] sigBytes = LMSSerializer.serialize(sig, keyID, setup.getLmsPublicKey());
+            LMSPublicKeyParameters pub = setup.getLmsPublicKey();
             LMSSigner signer = new LMSSigner();
             signer.init(false, pub);
             return signer.verifySignature(message, sigBytes);
@@ -125,10 +131,10 @@ public class ProtocolRunner {
     }
 
     /** Devuelve los keyIDs donde el trustee t participa, como string legible. */
-    private static String coalitionsOf(int t, int[][] CL) {
+    private static String coalitionsOf(int t, int[][] coalitions) {
         StringBuilder sb = new StringBuilder();
-        for (int keyID = 0; keyID < CL.length; keyID++) {
-            for (int member : CL[keyID]) {
+        for (int keyID = 0; keyID < coalitions.length; keyID++) {
+            for (int member : coalitions[keyID]) {
                 if (member == t) {
                     if (sb.length() > 0) sb.append(", ");
                     sb.append("KeyID=").append(keyID);
@@ -148,5 +154,4 @@ public class ProtocolRunner {
         }
         return sb.toString();
     }
-
 }

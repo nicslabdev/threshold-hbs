@@ -36,3 +36,7 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+cas-test/
+
+**/dependency-reduced-pom.xml

@@ -4,7 +4,6 @@ import io.javalin.Javalin;
 import io.javalin.http.Context;
 
 import java.io.IOException;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 
 /**
@@ -13,21 +12,11 @@ import java.nio.file.Paths;
  * Expone dos endpoints sobre el BlobStore:
  *
  *   POST /blobs
- *     Body:    bytes crudos (application/octet-stream)
- *     Respuesta 201 Created
- *     Header:  Location: /blobs/{cid}
- *     Body:    {cid}  (texto plano, el SHA-256 hex del contenido)
- *
  *   GET /blobs/{cid}
- *     Respuesta 200 OK
- *     Body:    bytes crudos del blob
- *     — o —
- *     Respuesta 404 Not Found si el CID no existe
- *     Respuesta 400 Bad Request si el CID tiene formato inválido
  *
  * Configuración por variables de entorno:
- *   CAS_PORT      Puerto de escucha (default: 8080)
- *   CAS_DATA_DIR  Directorio de persistencia (default: /data)
+ *   CAS_PORT - Puerto de escucha (default: 8080)
+ *   CAS_DATA_DIR - Directorio de persistencia (default: /data)
  */
 public class CASServer {
 

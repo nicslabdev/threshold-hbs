@@ -1,19 +1,5 @@
 package es.uma.nicslab.hbs.roles;
 
-import es.uma.nicslab.hbs.lms.*;
-import es.uma.nicslab.hbs.model.*;
-import es.uma.nicslab.hbs.protocol.PublicBulletinBoard;
-import es.uma.nicslab.hbs.util.*;
-
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
-import java.security.SecureRandom;
-
-import org.bouncycastle.crypto.AsymmetricCipherKeyPair;
-
-import static org.junit.jupiter.api.Assertions.*;
-
 public class AggregatorTest {
 
     /* private Aggregator aggregator;

@@ -1,7 +1,6 @@
 package es.uma.nicslab.hbs.lms;
 
 import es.uma.nicslab.hbs.model.ThresholdSignature;
-import es.uma.nicslab.hbs.protocol.PublicBulletinBoard;
 
 import java.io.IOException;
 
@@ -28,29 +27,22 @@ public class LMSSerializer {
      *   path[0..h-1]     — nodos Merkle (h*n bytes cada uno)
      */
     public byte[] serialize(ThresholdSignature sig, int keyId) throws IOException {
-
-        // Construir LMOtsSignature con R como C y Z como y
         LMOtsSignature otsSig = new LMOtsSignature(otsParameters, sig.getR(), sig.getZ());
-
-        // Construir LMSSignature con q, otsSig, lmsParameters y PATH
         LMSSignature lmsSig = new LMSSignature(keyId, otsSig, lmsParameters, sig.getPATH());
-
         return lmsSig.getEncoded();
     }
 
     /**
-     * Método estático de conveniencia para el ProtocolRunner.
-     * Extrae los parámetros OTS y LMS directamente del PublicBulletinBoard.
+     * Método estático de conveniencia.
+     * Extrae los parámetros OTS y LMS directamente de la clave pública LMS.
      *
-     * @param sig    firma threshold a serializar
-     * @param board  tablón público con los parámetros del árbol LMS
-     * @param keyId  índice OTS (q) — identifica la hoja del árbol
+     * @param sig          Firma threshold a serializar.
+     * @param keyId        Índice OTS (q) — identifica la hoja del árbol.
+     * @param lmsPublicKey Clave pública LMS con los parámetros del esquema.
      */
-    public static byte[] serialize(ThresholdSignature sig, PublicBulletinBoard board, int keyId) throws IOException {
-        LMOtsParameters otsParams = board.getPublicKey().getOtsParameters();
-        LMSigParameters lmsParams = board.getPublicKey().getSigParameters();
-        LMSSerializer serializer  = new LMSSerializer(otsParams, lmsParams);
-        return serializer.serialize(sig, keyId);
+    public static byte[] serialize(ThresholdSignature sig, int keyId, LMSPublicKeyParameters lmsPublicKey) throws IOException {
+        LMOtsParameters otsParams = lmsPublicKey.getOtsParameters();
+        LMSigParameters lmsParams = lmsPublicKey.getSigParameters();
+        return new LMSSerializer(otsParams, lmsParams).serialize(sig, keyId);
     }
-
 }

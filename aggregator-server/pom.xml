@@ -49,16 +49,6 @@
             <artifactId>javalin</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.jetty</groupId>
-            <artifactId>jetty-http</artifactId>
-            <version>12.1.7</version>
-        </dependency>
-        <dependency>
-            <groupId>org.eclipse.jetty</groupId>
-            <artifactId>jetty-server</artifactId>
-            <version>11.0.24</version>
-        </dependency>
-        <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-simple</artifactId>
         </dependency>
@@ -66,6 +56,11 @@
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>es.uma.nicslab</groupId>
+            <artifactId>cas</artifactId>
+            <version>${project.version}</version>
         </dependency>
     </dependencies>
 
@@ -80,11 +75,11 @@
                         <phase>package</phase>
                         <goals><goal>shade</goal></goals>
                         <configuration>
+                            <shadedArtifactAttached>true</shadedArtifactAttached>
+                            <shadedClassifierName>fat</shadedClassifierName>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>
-                                        es.uma.nicslab.hbs.aggregator.AggregatorHttpServer
-                                    </mainClass>
+                                    <mainClass>es.uma.nicslab.hbs.cas.CasServer</mainClass>
                                 </transformer>
                             </transformers>
                         </configuration>

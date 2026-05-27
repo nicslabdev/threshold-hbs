@@ -73,11 +73,11 @@
                         <phase>package</phase>
                         <goals><goal>shade</goal></goals>
                         <configuration>
+                            <shadedArtifactAttached>true</shadedArtifactAttached>
+                            <shadedClassifierName>fat</shadedClassifierName>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>
-                                        es.uma.nicslab.hbs.trustee.TrusteeGrpcServer
-                                    </mainClass>
+                                    <mainClass>es.uma.nicslab.hbs.cas.CasServer</mainClass>
                                 </transformer>
                             </transformers>
                         </configuration>

@@ -52,6 +52,11 @@
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>es.uma.nicslab</groupId>
+            <artifactId>cas</artifactId>
+            <version>${project.version}</version>
+        </dependency>
     </dependencies>
 
     <build>
@@ -65,11 +70,11 @@
                         <phase>package</phase>
                         <goals><goal>shade</goal></goals>
                         <configuration>
+                            <shadedArtifactAttached>true</shadedArtifactAttached>
+                            <shadedClassifierName>fat</shadedClassifierName>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>
-                                        es.uma.nicslab.hbs.dealer.DealerMain
-                                    </mainClass>
+                                    <mainClass>es.uma.nicslab.hbs.cas.CasServer</mainClass>
                                 </transformer>
                             </transformers>
                         </configuration>
