@@ -1,16 +1,18 @@
 package es.uma.nicslab.hbs.trustee;
 
 import es.uma.nicslab.hbs.protocol.SigningState;
+import es.uma.nicslab.hbs.util.ByteUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.sql.SQLException;
+import java.nio.ByteBuffer;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests unitarios de SQLiteTrusteeState.
+ * Tests unitarios de SQLiteTrusteeState adaptados al diseño multi-KeyID concurrente.
  * Usan ":memory:" para no dejar ficheros en disco.
  */
 class SQLiteTrusteeStateTest {
@@ -47,7 +49,7 @@ class SQLiteTrusteeStateTest {
     void claim_keyid_ya_reclamado_devuelve_false() throws SQLException {
         store.initKeyList(new int[]{0});
         assertTrue(store.claimKeyID(0));
-        assertFalse(store.claimKeyID(0)); // segunda vez: ya no está
+        assertFalse(store.claimKeyID(0)); // segunda vez: ya no está (quemado atómico)
     }
 
     @Test
@@ -76,50 +78,62 @@ class SQLiteTrusteeStateTest {
 
     @Test
     void hasSigningState_false_sin_estado() throws SQLException {
-        assertFalse(store.hasSigningState());
+        assertFalse(store.hasSigningState(42)); // Ahora requiere especificar el KeyID
     }
 
     @Test
     void saveSigningState_y_hasSigningState_true() throws SQLException {
-        store.saveSigningState(new byte[]{1, 2}, "msg".getBytes());
-        assertTrue(store.hasSigningState());
+        int keyID = 42;
+
+        store.saveSigningState(keyID, "msg".getBytes());
+        assertTrue(store.hasSigningState(keyID));
     }
 
     @Test
     void loadAndClear_devuelve_estado_correcto() throws SQLException {
-        byte[] keyID   = new byte[]{0, 0, 0, 5};
+        int keyID = 5;
         byte[] message = "mensaje de prueba".getBytes();
 
         store.saveSigningState(keyID, message);
-        SigningState state = store.loadAndClearSigningState();
+        SigningState state = store.loadAndClearSigningState(keyID); // Requiere parámetro entero
 
         assertNotNull(state);
-        assertArrayEquals(keyID,   state.keyID());
+        assertEquals(keyID, state.keyID()); // El Core sigue esperando bytes
         assertArrayEquals(message, state.message());
     }
 
     @Test
     void loadAndClear_borra_el_estado() throws SQLException {
-        store.saveSigningState(new byte[]{1}, "msg".getBytes());
-        store.loadAndClearSigningState();
+        int keyID = 1;
 
-        assertFalse(store.hasSigningState());
-        assertNull(store.loadAndClearSigningState());
+        store.saveSigningState(keyID, "msg".getBytes());
+        store.loadAndClearSigningState(keyID);
+
+        assertFalse(store.hasSigningState(keyID));
+        assertNull(store.loadAndClearSigningState(keyID));
     }
 
     @Test
     void loadAndClear_sin_estado_devuelve_null() throws SQLException {
-        assertNull(store.loadAndClearSigningState());
+        assertNull(store.loadAndClearSigningState(99));
     }
 
     @Test
-    void save_sobreescribe_estado_previo() throws SQLException {
-        store.saveSigningState(new byte[]{1}, "primero".getBytes());
-        store.saveSigningState(new byte[]{2}, "segundo".getBytes());
+    void soporta_multiples_estados_concurrentes_sin_sobreescribir() throws SQLException {
+        // TEST CRÍTICO: Verifica que el nuevo diseño soporta múltiples firmas concurrentes
+        int keyID1 = 10;
+        int keyID2 = 20;
 
-        SigningState state = store.loadAndClearSigningState();
-        assertNotNull(state);
-        assertArrayEquals("segundo".getBytes(), state.message());
+        store.saveSigningState(keyID1, "primero".getBytes());
+        store.saveSigningState(keyID2, "segundo".getBytes()); // Ya no se sobreescriben
+
+        SigningState state1 = store.loadAndClearSigningState(keyID1);
+        SigningState state2 = store.loadAndClearSigningState(keyID2);
+
+        assertNotNull(state1);
+        assertNotNull(state2);
+        assertArrayEquals("primero".getBytes(), state1.message());
+        assertArrayEquals("segundo".getBytes(), state2.message());
     }
 
     // -------------------------------------------------------------------------
@@ -128,23 +142,23 @@ class SQLiteTrusteeStateTest {
 
     @Test
     void ciclo_completo_round1_round2() throws SQLException {
-        byte[] keyID   = new byte[]{0, 0, 0, 7};
+        int keyID = 7;
         byte[] message = "mensaje threshold".getBytes();
 
         // Simula Round1: el trustee reclama el keyID y guarda el estado
         store.initKeyList(new int[]{7});
         assertTrue(store.claimKeyID(7));
         store.saveSigningState(keyID, message);
-        assertTrue(store.hasSigningState());
+        assertTrue(store.hasSigningState(keyID));
 
-        // Simula Round2: recupera y borra el estado
-        SigningState state = store.loadAndClearSigningState();
+        // Simula Round2: recupera y borra el estado de forma aislada
+        SigningState state = store.loadAndClearSigningState(keyID);
         assertNotNull(state);
-        assertArrayEquals(keyID,   state.keyID());
+        assertEquals(keyID, state.keyID());
         assertArrayEquals(message, state.message());
-        assertFalse(store.hasSigningState());
+        assertFalse(store.hasSigningState(keyID));
 
-        // El keyID ya no se puede reutilizar
+        // El keyID ya no se puede reutilizar jamás
         assertFalse(store.claimKeyID(7));
     }
 
@@ -154,14 +168,31 @@ class SQLiteTrusteeStateTest {
 
         // Firma completa con keyID=0
         store.claimKeyID(0);
-        store.saveSigningState(new byte[]{0}, "msg".getBytes());
-        store.loadAndClearSigningState();
+        store.saveSigningState(0, "msg".getBytes());
+        store.loadAndClearSigningState(0);
 
-        // Intento de reutilización
+        // Intento de reutilización maliciosa
         assertFalse(store.claimKeyID(0));
 
-        // Los demás siguen disponibles
+        // Los demás siguen estando listos para su uso
         assertTrue(store.claimKeyID(1));
         assertTrue(store.claimKeyID(2));
+    }
+
+    @Test
+    void purgeExpiredSessions_limpia_solo_antiguas() throws SQLException, InterruptedException {
+        int keyIDOld = 100;
+        int keyIDNew = 200;
+
+        store.saveSigningState(keyIDOld, "viejo".getBytes());
+        Thread.sleep(50); // Forzamos paso del tiempo para expirar la primera sesión
+
+        store.saveSigningState(keyIDNew, "nuevo".getBytes());
+
+        // Purgamos las sesiones que tengan más de 30 milisegundos
+        store.purgeExpiredSessions(30);
+
+        assertFalse(store.hasSigningState(keyIDOld)); // Eliminada
+        assertTrue(store.hasSigningState(keyIDNew));  // Preservada
     }
 }

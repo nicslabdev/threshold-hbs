@@ -5,13 +5,10 @@ import es.uma.nicslab.hbs.cas.CASServer;
 import es.uma.nicslab.hbs.cas.BlobStore;
 import es.uma.nicslab.hbs.lms.*;
 import es.uma.nicslab.hbs.model.*;
-import es.uma.nicslab.hbs.protocol.InMemoryTrusteeState;
-import es.uma.nicslab.hbs.protocol.TrusteeState;
-import es.uma.nicslab.hbs.protocol.HttpCASReader;
-import es.uma.nicslab.hbs.protocol.HttpCASWriter;
+import es.uma.nicslab.hbs.cas.HttpCASReader;
+import es.uma.nicslab.hbs.cas.HttpCASWriter;
 import es.uma.nicslab.hbs.roles.*;
 import es.uma.nicslab.hbs.trustee.SQLiteTrusteeState;
-import es.uma.nicslab.hbs.util.ByteUtils;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 

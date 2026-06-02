@@ -1,6 +1,8 @@
 syntax = "proto3";
 package hbs;
 option java_package = "es.uma.nicslab.hbs.grpc";
+option java_multiple_files = true;
+option java_outer_classname = "TrusteeProto";
 
 service TrusteeService {
   rpc Setup (SetupRequest) returns (SetupResponse);
@@ -24,7 +26,7 @@ message SetupResponse {
 
 // --- Ronda 1 ---
 message Sign1Request {
-  bytes key_id = 1;
+  int32 key_id = 1;
   bytes message = 2;
   int32 n = 3;
 }
@@ -36,8 +38,9 @@ message Sign1Response {
 
 // --- Ronda 2 ---
 message Sign2Request {
-  bytes r = 1;
-  bytes chk_i = 2;
+  int32 key_id = 1;
+  bytes r = 2;
+  bytes chk_i = 3;
 }
 message Sign2Response {
   bytes path_t = 1;

@@ -1,6 +1,6 @@
-package es.uma.nicslab.hbs.protocol;
+package es.uma.nicslab.hbs.cas;
 
-import es.uma.nicslab.hbs.cas.CASClient;
+import es.uma.nicslab.hbs.protocol.*;
 import es.uma.nicslab.hbs.model.CRV;
 
 import java.io.IOException;

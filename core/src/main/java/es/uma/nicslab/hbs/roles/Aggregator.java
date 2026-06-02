@@ -76,7 +76,7 @@ public class Aggregator {
         byte[][] sharesZ = new byte[k][];
 
         for (int i = 0; i < k; i++) {
-            Round2Msg round2 = trustees[C[i]].shardSign2(R, CHK[i]);
+            Round2Msg round2 = trustees[C[i]].shardSign2(keyIdBytes, R, CHK[i]);
             if (round2 == null) return null;
             sharesPATH[i] = round2.getPATH_t();
             sharesZ[i] = round2.getZ_t();
@@ -132,7 +132,7 @@ public class Aggregator {
         byte[][] sharesZ = new byte[k][];
 
         for (int i = 0; i < k; i++) {
-            Round2Msg round2 = trustees[i].kkSign2(R, CHK[i]);
+            Round2Msg round2 = trustees[i].kkSign2(keyID, R, CHK[i]);
             if (round2 == null) return null;
             sharesPATH[i] = round2.getPATH_t();
             sharesZ[i] = round2.getZ_t();

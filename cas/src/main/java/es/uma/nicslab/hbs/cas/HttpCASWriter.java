@@ -1,7 +1,10 @@
-package es.uma.nicslab.hbs.protocol;
+package es.uma.nicslab.hbs.cas;
 
-import es.uma.nicslab.hbs.cas.CASClient;
 import es.uma.nicslab.hbs.model.CRV;
+import es.uma.nicslab.hbs.protocol.CASWriter;
+import es.uma.nicslab.hbs.protocol.CLSerializer;
+import es.uma.nicslab.hbs.protocol.CRVSerializer;
+import es.uma.nicslab.hbs.protocol.CoalitionEntry;
 
 import java.io.IOException;
 

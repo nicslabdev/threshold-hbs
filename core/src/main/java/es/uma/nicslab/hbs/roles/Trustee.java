@@ -83,19 +83,19 @@ public class Trustee {
             return null; // ⊥ — KeyID no disponible o ya usado
         }
 
-        if (store.hasSigningState()) {
+        if (store.hasSigningState(keyIDInt)) {
             return null; // ⊥ — ya hay una firma en curso
         }
 
-        store.saveSigningState(keyID, message);
+        store.saveSigningState(keyIDInt, message);
         return KK_GenSig1(keyID);
     }
 
     /**
      * Round 2 del protocolo Shard. Delega en KK_Sign2.
      */
-    public Round2Msg shardSign2(byte[] R, byte[] CHK) throws Exception{
-        return KK_Sign2(R, CHK);
+    public Round2Msg shardSign2(byte[] keyID, byte[] R, byte[] CHK) throws Exception{
+        return KK_Sign2(keyID, R, CHK);
     }
 
 
@@ -103,24 +103,25 @@ public class Trustee {
      * Round 1 del protocolo k-of-k.
      */
     public Round1Msg kkSign1(byte[] keyID, byte[] message) throws Exception {
-        if (store.hasSigningState()) {
+        int keyIDInt = ByteUtils.bytesToInt(keyID);
+
+        if (store.hasSigningState(keyIDInt)) {
             return null; // ⊥ — ya hay una firma en curso
         }
 
-        int keyIDInt = ByteUtils.bytesToInt(keyID);
         if (!store.claimKeyID(keyIDInt)) {
             return null; // ⊥ — KeyID ya usado
         }
 
-        store.saveSigningState(keyID, message);
+        store.saveSigningState(keyIDInt, message);
         return KK_GenSig1(keyID);
     }
 
     /**
      * Round 2 del protocolo k-of-k.
      */
-    public Round2Msg kkSign2(byte[] R, byte[] CHK) throws Exception {
-        return KK_Sign2(R, CHK);
+    public Round2Msg kkSign2(byte[] keyID, byte[] R, byte[] CHK) throws Exception {
+        return KK_Sign2(keyID, R, CHK);
     }
 
     private Round1Msg KK_GenSig1(byte[] keyID) {
@@ -129,13 +130,13 @@ public class Trustee {
         return new Round1Msg(R_t, CHK_t);
     }
 
-    private Round2Msg KK_Sign2(byte[] R, byte[] CHK) throws Exception{
-        SigningState state = store.loadAndClearSigningState();
+    private Round2Msg KK_Sign2(byte[] keyID, byte[] R, byte[] CHK) throws Exception{
+        SigningState state = store.loadAndClearSigningState(ByteUtils.bytesToInt(keyID));
+
         if (state == null) {
             return null; // ⊥ — no hay firma en curso
         }
 
-        byte[] keyID = state.keyID();
         byte[] M = state.message();
 
         if (!KK_Auth(R, CHK, keyID)) {

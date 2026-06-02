@@ -52,7 +52,7 @@ public interface TrusteeState {
      * @param keyID   KeyID en curso (bytes).
      * @param message Mensaje a firmar.
      */
-    void saveSigningState(byte[] keyID, byte[] message) throws Exception;
+    void saveSigningState(int keyID, byte[] message) throws Exception;
 
     /**
      * Recupera el estado entre rondas y lo borra en una sola operación.
@@ -63,11 +63,11 @@ public interface TrusteeState {
      *
      * @return SigningState con keyID y message, o null si no hay firma en curso.
      */
-    SigningState loadAndClearSigningState() throws Exception;
+    SigningState loadAndClearSigningState(int keyID) throws Exception;
 
     /**
      * Indica si hay una firma en curso (estado entre Round1 y Round2).
      */
-    boolean hasSigningState() throws Exception;
+    boolean hasSigningState(int keyID) throws Exception;
 
 }

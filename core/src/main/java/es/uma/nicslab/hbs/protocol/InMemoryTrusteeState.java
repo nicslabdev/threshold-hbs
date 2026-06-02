@@ -29,19 +29,22 @@ public class InMemoryTrusteeState implements TrusteeState {
     }
 
     @Override
-    public synchronized void saveSigningState(byte[] keyID, byte[] message) {
-        this.signingState = new SigningState(keyID.clone(), message.clone());
+    public synchronized void saveSigningState(int keyID, byte[] message) {
+        this.signingState = new SigningState(keyID, message.clone());
     }
 
     @Override
-    public synchronized SigningState loadAndClearSigningState() {
+    public synchronized SigningState loadAndClearSigningState(int keyID) {
         SigningState state = this.signingState;
+        if (state.keyID()!=keyID) {
+            return null;
+        }
         this.signingState = null;
         return state;
     }
 
     @Override
-    public synchronized boolean hasSigningState() {
+    public synchronized boolean hasSigningState(int keyID) {
         return signingState != null;
     }
 }
