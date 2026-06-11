@@ -2,8 +2,8 @@ package es.uma.nicslab.hbs.trustee;
 
 import es.uma.nicslab.hbs.protocol.SigningState;
 import es.uma.nicslab.hbs.protocol.TrusteeState;
-import es.uma.nicslab.hbs.util.ByteUtils;
 
+import java.nio.file.Path;
 import java.sql.*;
 
 public class SQLiteTrusteeState implements TrusteeState {
@@ -115,6 +115,14 @@ public class SQLiteTrusteeState implements TrusteeState {
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next();
             }
+        }
+    }
+
+    public synchronized boolean hasAnySigningState() throws SQLException {
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT 1 FROM signing_state LIMIT 1")) {
+            return rs.next();
         }
     }
 

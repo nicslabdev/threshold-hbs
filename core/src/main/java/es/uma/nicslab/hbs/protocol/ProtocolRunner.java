@@ -4,6 +4,8 @@ import es.uma.nicslab.hbs.lms.*;
 import es.uma.nicslab.hbs.model.*;
 import es.uma.nicslab.hbs.roles.*;
 
+import java.util.Arrays;
+
 public class ProtocolRunner {
 
     public static void main(String[] args) throws Exception {
@@ -40,9 +42,26 @@ public class ProtocolRunner {
         // ── Setup ─────────────────────────────────────────────────────────────
         System.out.println("[Setup] Ejecutando setup...");
         Dealer dealer = new Dealer(cas);
-        SetupDealer setup = dealer.setup(n, coalitions, lmsParams);
+        SetupDealer result = dealer.setup(n, coalitions, lmsParams);
 
-        Trustee[] trustees = setup.getTrustees();
+        // Crear trustees locales para simulación
+        Trustee[] trustees = new Trustee[n];
+        for (int i = 0; i < n; i++) {
+            trustees[i] = new Trustee(
+                    result.getK()[i],
+                    result.getLmsPublicKey().getOtsParameters(),
+                    result.getLmsPublicKey().getI(),
+                    result.getLengthCHK(),
+                    result.getLengthPath(),
+                    new InMemoryTrusteeState()
+            );
+            trustees[i].setup(i, result.getCl());
+        }
+
+        // Envolver en LocalTrusteeProxy
+        TrusteeProxy[] proxies = Arrays.stream(trustees)
+                .map(LocalTrusteeProxy::new)
+                .toArray(TrusteeProxy[]::new);
 
         System.out.println("[Setup] Completado. Trustees: " + n + ", KeyIDs disponibles: " + indexLimit);
         for (int t = 0; t < n; t++) {
@@ -51,9 +70,9 @@ public class ProtocolRunner {
 
         // ── Aggregator ────────────────────────────────────────────────────────
         Aggregator aggregator = new Aggregator(
-                setup.getLmsPublicKey(),
+                result.getLmsPublicKey(),
                 cas,
-                setup.getClCid()
+                result.getClCid()
         );
 
         // ── Firma con distintas coaliciones ───────────────────────────────────
@@ -71,7 +90,7 @@ public class ProtocolRunner {
             System.out.printf("%n[KeyID=%d] Coalición: {%s} — Mensaje: \"%s\"%n",
                     keyID, coalitionStr(coalition), new String(messages[keyID]));
 
-            ThresholdSignature sig = aggregator.aggregatorSign(messages[keyID], keyID, trustees);
+            ThresholdSignature sig = aggregator.aggregatorSign(messages[keyID], keyID, proxies);
 
             if (sig == null) {
                 System.out.println("  ✗ aggregatorSign devolvió ⊥");
@@ -79,7 +98,7 @@ public class ProtocolRunner {
                 continue;
             }
 
-            boolean valid = verifySignature(setup, sig, messages[keyID], keyID);
+            boolean valid = verifySignature(result.getLmsPublicKey(), sig, messages[keyID], keyID);
 
             if (valid) {
                 System.out.println("  ✓ Firma verificada correctamente (indistinguible de LMS estándar)");
@@ -92,7 +111,7 @@ public class ProtocolRunner {
         // ── Prueba de protección one-time ─────────────────────────────────────
         System.out.println("\n[One-Time] Intentando reusar KeyID=0 (debe devolver ⊥)...");
         ThresholdSignature reuse = aggregator.aggregatorSign(
-                "reuse attack".getBytes(), 0, trustees);
+                "reuse attack".getBytes(), 0, proxies);
         if (reuse == null) {
             System.out.println("  ✓ Reutilización rechazada correctamente (⊥)");
         } else {
@@ -114,13 +133,9 @@ public class ProtocolRunner {
      * Verifica la ThresholdSignature contra la clave pública LMS del setup.
      * Serializa la firma al formato RFC 8554 y usa el verificador de Bouncy Castle.
      */
-    private static boolean verifySignature(SetupDealer setup,
-                                           ThresholdSignature sig,
-                                           byte[] message,
-                                           int keyID) {
+    private static boolean verifySignature(LMSPublicKeyParameters pub, ThresholdSignature sig, byte[] message, int keyID) {
         try {
-            byte[] sigBytes = LMSSerializer.serialize(sig, keyID, setup.getLmsPublicKey());
-            LMSPublicKeyParameters pub = setup.getLmsPublicKey();
+            byte[] sigBytes = LMSSerializer.serialize(sig, keyID, pub);
             LMSSigner signer = new LMSSigner();
             signer.init(false, pub);
             return signer.verifySignature(message, sigBytes);

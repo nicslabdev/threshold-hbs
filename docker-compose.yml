@@ -1,0 +1,134 @@
+services:
+
+  # ── CAS: Content Addressable Storage ─────────────────────────────────────
+  cas:
+    build:
+      context: ./cas
+      dockerfile: Dockerfile
+    environment:
+      CAS_PORT: "8080"
+      CAS_DATA_DIR: "/data"
+    volumes:
+      - cas-data:/data
+    networks:
+      - hbs-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/blobs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa || true"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── Trustees ───────────────────────────────────────────────────────────────
+  trustee-0:
+    build:
+      context: ./trustee-server
+      dockerfile: Dockerfile
+    environment:
+      TRUSTEE_INDEX: "0"
+      TRUSTEE_PORT: "9090"
+      TRUSTEE_DB: "/db/trustee.db"
+      TRUSTEE_CONFIG: "/db/trustee-config.bin"
+      BULLETIN_BOARD_PATH: "/bulletin/board.json"
+      CAS_URL: "http://cas:8080"
+    volumes:
+      - trustee0-db:/db
+      - bulletin:/bulletin
+    networks:
+      - hbs-net
+    depends_on:
+      cas:
+        condition: service_healthy
+
+  trustee-1:
+    build:
+      context: ./trustee-server
+      dockerfile: Dockerfile
+    environment:
+      TRUSTEE_INDEX: "1"
+      TRUSTEE_PORT: "9090"
+      TRUSTEE_DB: "/db/trustee.db"
+      TRUSTEE_CONFIG: "/db/trustee-config.bin"
+      BULLETIN_BOARD_PATH: "/bulletin/board.json"
+      CAS_URL: "http://cas:8080"
+    volumes:
+      - trustee1-db:/db
+      - bulletin:/bulletin
+    networks:
+      - hbs-net
+    depends_on:
+      cas:
+        condition: service_healthy
+
+  trustee-2:
+    build:
+      context: ./trustee-server
+      dockerfile: Dockerfile
+    environment:
+      TRUSTEE_INDEX: "2"
+      TRUSTEE_PORT: "9090"
+      TRUSTEE_DB: "/db/trustee.db"
+      TRUSTEE_CONFIG: "/db/trustee-config.bin"
+      BULLETIN_BOARD_PATH: "/bulletin/board.json"
+      CAS_URL: "http://cas:8080"
+    volumes:
+      - trustee2-db:/db
+      - bulletin:/bulletin
+    networks:
+      - hbs-net
+    depends_on:
+      cas:
+        condition: service_healthy
+
+  # ── Dealer: contenedor efímero de setup ───────────────────────────────────
+  dealer:
+    build:
+      context: ./dealer-cli
+      dockerfile: Dockerfile
+    environment:
+      CAS_URL: "http://cas:8080"
+      BULLETIN_BOARD_PATH: "/bulletin/board.json"
+      SETUP_CONFIG_PATH: "/config/setup-config.json"
+      TRUSTEE_URLS: "trustee-0:9090,trustee-1:9090,trustee-2:9090"
+    volumes:
+      - bulletin:/bulletin
+      - ./setup-config.json:/config/setup-config.json:ro
+    networks:
+      - hbs-net
+    depends_on:
+      cas:
+        condition: service_healthy
+    profiles:
+      - setup   # solo se ejecuta con: docker compose --profile setup up dealer
+
+  # ── Aggregator ────────────────────────────────────────────────────────────
+  aggregator:
+    build:
+      context: ./aggregator-server
+      dockerfile: Dockerfile
+    environment:
+      AGGREGATOR_PORT: "8081"
+      CAS_URL: "http://cas:8080"
+      BULLETIN_BOARD_PATH: "/bulletin/board.json"
+      TRUSTEE_URLS: "trustee-0:9090,trustee-1:9090,trustee-2:9090"
+    volumes:
+      - bulletin:/bulletin
+    networks:
+      - hbs-net
+    ports:
+      - "8081:8081"   # expuesto al exterior para recibir peticiones de firma
+    depends_on:
+      cas:
+        condition: service_healthy
+
+# ── Volúmenes ──────────────────────────────────────────────────────────────
+volumes:
+  cas-data:      # blobs del CAS
+  trustee0-db:   # SQLite del trustee 0
+  trustee1-db:   # SQLite del trustee 1
+  trustee2-db:   # SQLite del trustee 2
+  bulletin:      # BulletinBoard compartido entre dealer, trustees y aggregator
+
+# ── Red interna ────────────────────────────────────────────────────────────
+networks:
+  hbs-net:
+    driver: bridge

@@ -7,12 +7,14 @@ import es.uma.nicslab.hbs.lms.*;
 import es.uma.nicslab.hbs.model.*;
 import es.uma.nicslab.hbs.cas.HttpCASReader;
 import es.uma.nicslab.hbs.cas.HttpCASWriter;
+import es.uma.nicslab.hbs.protocol.*;
 import es.uma.nicslab.hbs.roles.*;
 import es.uma.nicslab.hbs.trustee.SQLiteTrusteeState;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -64,51 +66,25 @@ class ProtocolIntegrationTest {
         casServer.stop();
     }
 
-    // -------------------------------------------------------------------------
-    // Utilidad: crea trustees con SQLiteTrusteeState en memoria
-    // -------------------------------------------------------------------------
-
-    /**
-     * Crea un Dealer que usa SQLiteTrusteeState para cada trustee.
-     * Sobreescribe la creación de trustees del Dealer estándar usando
-     * un factory que inyecta SQLiteTrusteeState en lugar de InMemory.
-     */
-    private SetupDealer setupWithSQLite(int k, int[][] coalitions) throws Exception {
-        // Usamos el Dealer estándar con HttpCASWriter
-        Dealer dealer = new Dealer(casWriter);
-        SetupDealer result = dealer.setup(k, coalitions, LMS_PARAMS);
-
-        // Reemplazamos los trustees del resultado con versiones SQLite
-        // El Dealer ya configuró la keylist via setup(), así que
-        // recreamos los trustees con SQLiteTrusteeState y reiniciamos
-        // su keylist a partir de la CL ya publicada en el CAS.
-        Trustee[] sqliteTrustees = new Trustee[k];
+    private Trustee[] createTrustees(SetupDealer result, boolean useSQLite)
+            throws Exception {
+        int k = result.getK().length;
+        Trustee[] trustees = new Trustee[k];
         for (int i = 0; i < k; i++) {
-            SQLiteTrusteeState sqliteStore = new SQLiteTrusteeState(":memory:");
-
-            // Reconstruimos la keylist para este trustee a partir de la CL
-            int[] keyIDs = keyIDsForTrustee(i, result.getCl().length,
-                    toIntArrayCoalitions(result.getCl()));
-            sqliteStore.initKeyList(keyIDs);
-
-            // Creamos el trustee con los mismos parámetros pero store SQLite
-            Trustee original = result.getTrustees()[i];
-            sqliteTrustees[i] = new Trustee(
-                    original.getK(),
-                    original.getLmotsParameters(),
-                    original.getI(),
-                    original.getLengthCHK(),
-                    original.getLengthPath(),
-                    sqliteStore
+            TrusteeState store = useSQLite
+                    ? new SQLiteTrusteeState(":memory:")
+                    : new InMemoryTrusteeState();
+            trustees[i] = new Trustee(
+                    result.getK()[i],
+                    result.getLmsPublicKey().getOtsParameters(),
+                    result.getLmsPublicKey().getI(),
+                    result.getLengthCHK(),
+                    result.getLengthPath(),
+                    store
             );
+            trustees[i].setup(i, result.getCl());
         }
-
-        return new SetupDealer(
-                sqliteTrustees,
-                result.getLmsPublicKey(),
-                result.getCl(),
-                result.getClCid()
-        );
+        return trustees;
     }
 
     // -------------------------------------------------------------------------
@@ -152,9 +128,13 @@ class ProtocolIntegrationTest {
         Aggregator agg = new Aggregator(
                 result.getLmsPublicKey(), casReader, result.getClCid());
 
+        TrusteeProxy[] proxies = Arrays.stream(createTrustees(result, false))
+                .map(LocalTrusteeProxy::new)
+                .toArray(TrusteeProxy[]::new);
+
         byte[] message = "mensaje con CAS HTTP".getBytes();
         ThresholdSignature sig = agg.aggregatorSign(
-                message, 0, result.getTrustees());
+                message, 0, proxies);
 
         assertNotNull(sig);
         assertNotNull(sig.getR());
@@ -171,9 +151,13 @@ class ProtocolIntegrationTest {
         Aggregator agg = new Aggregator(
                 result.getLmsPublicKey(), casReader, result.getClCid());
 
+        TrusteeProxy[] proxies = Arrays.stream(createTrustees(result, false))
+                .map(LocalTrusteeProxy::new)
+                .toArray(TrusteeProxy[]::new);
+
         byte[] message = "verificacion con CAS HTTP real".getBytes();
         ThresholdSignature sig = agg.aggregatorSign(
-                message, 0, result.getTrustees());
+                message, 0, proxies);
         assertNotNull(sig);
 
         byte[] sigBytes = LMSSerializer.serialize(
@@ -191,14 +175,19 @@ class ProtocolIntegrationTest {
     @Test
     void firma_shard_con_cas_http_y_sqlite() throws Exception {
         int[][] coalitions = buildCoalitions(3, 32);
-        SetupDealer result = setupWithSQLite(3, coalitions);
+        Dealer dealer = new Dealer(casWriter);
+        SetupDealer result = dealer.setup(3, coalitions, LMS_PARAMS);
 
         Aggregator agg = new Aggregator(
                 result.getLmsPublicKey(), casReader, result.getClCid());
 
+        TrusteeProxy[] proxies = Arrays.stream(createTrustees(result, true))
+                .map(LocalTrusteeProxy::new)
+                .toArray(TrusteeProxy[]::new);
+
         byte[] message = "mensaje con SQLite y CAS HTTP".getBytes();
         ThresholdSignature sig = agg.aggregatorSign(
-                message, 0, result.getTrustees());
+                message, 0, proxies);
 
         assertNotNull(sig);
     }
@@ -206,14 +195,19 @@ class ProtocolIntegrationTest {
     @Test
     void firma_verifica_lms_estandar_con_sqlite_y_cas_http() throws Exception {
         int[][] coalitions = buildCoalitions(3, 32);
-        SetupDealer result = setupWithSQLite(3, coalitions);
+        Dealer dealer = new Dealer(casWriter);
+        SetupDealer result = dealer.setup(3, coalitions, LMS_PARAMS);
 
         Aggregator agg = new Aggregator(
                 result.getLmsPublicKey(), casReader, result.getClCid());
 
+        TrusteeProxy[] proxies = Arrays.stream(createTrustees(result, true))
+                .map(LocalTrusteeProxy::new)
+                .toArray(TrusteeProxy[]::new);
+
         byte[] message = "verificacion con SQLite y CAS HTTP".getBytes();
         ThresholdSignature sig = agg.aggregatorSign(
-                message, 0, result.getTrustees());
+                message, 0, proxies);
         assertNotNull(sig);
 
         byte[] sigBytes = LMSSerializer.serialize(
@@ -227,34 +221,44 @@ class ProtocolIntegrationTest {
     @Test
     void keyid_reutilizado_devuelve_null_con_sqlite() throws Exception {
         int[][] coalitions = buildCoalitions(3, 32);
-        SetupDealer result = setupWithSQLite(3, coalitions);
+        Dealer dealer = new Dealer(casWriter);
+        SetupDealer result = dealer.setup(3, coalitions, LMS_PARAMS);
 
         Aggregator agg = new Aggregator(
                 result.getLmsPublicKey(), casReader, result.getClCid());
 
+        TrusteeProxy[] proxies = Arrays.stream(createTrustees(result, true))
+                .map(LocalTrusteeProxy::new)
+                .toArray(TrusteeProxy[]::new);
+
         byte[] message = "mensaje".getBytes();
         ThresholdSignature sig1 = agg.aggregatorSign(
-                message, 0, result.getTrustees());
+                message, 0, proxies);
         assertNotNull(sig1);
 
         // Segunda firma con mismo keyID: SQLite garantiza que no está disponible
         ThresholdSignature sig2 = agg.aggregatorSign(
-                message, 0, result.getTrustees());
+                message, 0, proxies);
         assertNull(sig2, "KeyID reutilizado debe devolver null con SQLite");
     }
 
     @Test
     void multiples_firmas_con_sqlite_y_cas_http() throws Exception {
         int[][] coalitions = buildCoalitions(3, 32);
-        SetupDealer result = setupWithSQLite(3, coalitions);
+        Dealer dealer = new Dealer(casWriter);
+        SetupDealer result = dealer.setup(3, coalitions, LMS_PARAMS);
 
         Aggregator agg = new Aggregator(
                 result.getLmsPublicKey(), casReader, result.getClCid());
 
+        TrusteeProxy[] proxies = Arrays.stream(createTrustees(result, true))
+                .map(LocalTrusteeProxy::new)
+                .toArray(TrusteeProxy[]::new);
+
         for (int keyID = 0; keyID < 5; keyID++) {
             byte[] message = ("mensaje-" + keyID).getBytes();
             ThresholdSignature sig = agg.aggregatorSign(
-                    message, keyID, result.getTrustees());
+                    message, keyID, proxies);
             assertNotNull(sig, "Firma nula para keyID=" + keyID);
 
             byte[] sigBytes = LMSSerializer.serialize(
@@ -264,6 +268,30 @@ class ProtocolIntegrationTest {
             assertTrue(signer.verifySignature(message, sigBytes),
                     "Verificación fallida para keyID=" + keyID);
         }
+    }
+
+    @Test
+    void dealer_escribe_bulletin_board_correcto() throws Exception {
+        int[][] coalitions = buildCoalitions(3, 32);
+        Dealer dealer = new Dealer(casWriter);
+        SetupDealer result = dealer.setup(3, coalitions, LMS_PARAMS);
+
+        Path boardPath = tempDir.resolve("board.json");
+        BulletinBoard board = new BulletinBoard(
+                result.getLmsPublicKey(),
+                result.getClCid(),
+                result.getLengthCHK(),
+                result.getLengthPath()
+        );
+        board.saveTo(boardPath);
+
+        BulletinBoard loaded = BulletinBoard.loadFrom(boardPath);
+        assertArrayEquals(
+                result.getLmsPublicKey().getEncoded(),
+                loaded.getLmsPublicKey().getEncoded());
+        assertEquals(result.getClCid(),      loaded.getClCid());
+        assertEquals(result.getLengthCHK(),  loaded.getLengthCHK());
+        assertEquals(result.getLengthPath(), loaded.getLengthPATH());
     }
 
     // -------------------------------------------------------------------------
@@ -278,28 +306,4 @@ class ProtocolIntegrationTest {
         return cl;
     }
 
-    private static int[] keyIDsForTrustee(int trusteeIndex, int D,
-                                          int[][] coalitions) {
-        int count = 0;
-        for (int keyID = 0; keyID < D; keyID++) {
-            for (int m : coalitions[keyID]) {
-                if (m == trusteeIndex) { count++; break; }
-            }
-        }
-        int[] result = new int[count];
-        int idx = 0;
-        for (int keyID = 0; keyID < D; keyID++) {
-            for (int m : coalitions[keyID]) {
-                if (m == trusteeIndex) { result[idx++] = keyID; break; }
-            }
-        }
-        return result;
-    }
-
-    private static int[][] toIntArrayCoalitions(
-            es.uma.nicslab.hbs.protocol.CoalitionEntry[] cl) {
-        int[][] result = new int[cl.length][];
-        for (int i = 0; i < cl.length; i++) result[i] = cl[i].trustees();
-        return result;
-    }
 }

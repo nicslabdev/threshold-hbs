@@ -4,19 +4,18 @@ import es.uma.nicslab.hbs.lms.*;
 import es.uma.nicslab.hbs.model.*;
 import es.uma.nicslab.hbs.protocol.CASReader;
 import es.uma.nicslab.hbs.protocol.CoalitionEntry;
+import es.uma.nicslab.hbs.protocol.TrusteeProxy;
 import es.uma.nicslab.hbs.util.ByteUtils;
-
-import java.io.IOException;
 
 /**
  * Rol del Aggregator en el protocolo threshold HBS.
  *
- * El Aggregator es una parte no confiable que coordina las dos rondas
- * de firma entre los trustees. Puede impedir que se generen firmas válidas
- * pero no puede forjarlas.
+ * Usa TrusteeProxy[] en lugar de Trustee[] para ser agnóstico sobre si
+ * los trustees son locales (tests) o remotos via gRPC (producción).
  *
- * Recibe la clave pública LMS y la CL del CAS, y se comunica con los
- * trustees para obtener sus shares de firma.
+ * Las llamadas a trustees dentro de cada ronda son secuenciales.
+ * callShardSign1 y callShardSign2 son puntos de extensión para migrar
+ * a CompletableFuture en el futuro sin cambiar el flujo principal.
  */
 public class Aggregator {
 
@@ -24,26 +23,13 @@ public class Aggregator {
     private final CASReader cas;
     private final String clCid;
 
-    /**
-     * @param lmsPublicKey Clave pública LMS del esquema.
-     * @param cas          Lector del CAS para descargar CRVs y la CL.
-     * @param clCid        CID de la Coalition List en el CAS.
-     */
     public Aggregator(LMSPublicKeyParameters lmsPublicKey, CASReader cas, String clCid) {
         this.lmsPublicKey = lmsPublicKey;
         this.cas = cas;
         this.clCid = clCid;
     }
 
-    /**
-     * Genera una firma threshold para el mensaje dado usando el KeyID indicado.
-     * Implementa el protocolo Shard (Algorithm 6 del paper).
-     *
-     * @param message Mensaje a firmar.
-     * @param keyID   KeyID a usar (debe pertenecer a una coalición válida).
-     * @return ThresholdSignature, o null si algún trustee rechazó participar.
-     */
-    public ThresholdSignature aggregatorSign(byte[] message, int keyID, Trustee[] trustees) throws Exception {
+    public ThresholdSignature aggregatorSign(byte[] message, int keyID, TrusteeProxy[] trustees) throws Exception {
 
         CoalitionEntry[] cl = cas.getCL(clCid);
         CoalitionEntry entry = cl[keyID];
@@ -61,7 +47,7 @@ public class Aggregator {
         byte[][] sharesCHK = new byte[k][];
 
         for (int i = 0; i < k; i++) {
-            Round1Msg round1 = trustees[C[i]].shardSign1(keyIdBytes, message);
+            Round1Msg round1 = callShardSign1(trustees[C[i]], keyIdBytes, message);
             if (round1 == null) return null;
             sharesR[i] = round1.getR_t();
             sharesCHK[i] = round1.getCHK_t();
@@ -76,7 +62,7 @@ public class Aggregator {
         byte[][] sharesZ = new byte[k][];
 
         for (int i = 0; i < k; i++) {
-            Round2Msg round2 = trustees[C[i]].shardSign2(keyIdBytes, R, CHK[i]);
+            Round2Msg round2 = callShardSign2(trustees[C[i]], keyIdBytes, R, CHK[i]);
             if (round2 == null) return null;
             sharesPATH[i] = round2.getPATH_t();
             sharesZ[i] = round2.getZ_t();
@@ -92,15 +78,7 @@ public class Aggregator {
         return new ThresholdSignature(R, PATH, Z);
     }
 
-    /**
-     * Genera una firma threshold k-of-k (todos los trustees participan).
-     * Implementa KK_Aggregator_Sign (Algorithm 6 del paper).
-     *
-     * @param message Mensaje a firmar.
-     * @param keyID   KeyID a usar.
-     * @return ThresholdSignature, o null si algún trustee rechazó participar.
-     */
-    public ThresholdSignature kkAggregatorSign(byte[] message, byte[] keyID, Trustee[] trustees) throws Exception {
+    public ThresholdSignature kkAggregatorSign(byte[] message, byte[] keyID, TrusteeProxy[] trustees) throws Exception {
 
         CoalitionEntry[] cl = cas.getCL(clCid);
         int ID = ByteUtils.bytesToInt(keyID);
@@ -117,7 +95,7 @@ public class Aggregator {
         byte[][] sharesCHK = new byte[k][];
 
         for (int i = 0; i < k; i++) {
-            Round1Msg round1 = trustees[i].kkSign1(keyID, message);
+            Round1Msg round1 = callShardSign1(trustees[i], keyID, message);
             if (round1 == null) return null;
             sharesR[i] = round1.getR_t();
             sharesCHK[i] = round1.getCHK_t();
@@ -132,7 +110,7 @@ public class Aggregator {
         byte[][] sharesZ = new byte[k][];
 
         for (int i = 0; i < k; i++) {
-            Round2Msg round2 = trustees[i].kkSign2(keyID, R, CHK[i]);
+            Round2Msg round2 = callShardSign2(trustees[i], keyID, R, CHK[i]);
             if (round2 == null) return null;
             sharesPATH[i] = round2.getPATH_t();
             sharesZ[i] = round2.getZ_t();
@@ -148,11 +126,21 @@ public class Aggregator {
         return new ThresholdSignature(R, PATH, Z);
     }
 
+    // -------------------------------------------------------------------------
+    // Puntos de extensión para paralelización futura con CompletableFuture
+    // -------------------------------------------------------------------------
+
+    private Round1Msg callShardSign1(TrusteeProxy trustee, byte[] keyID, byte[] message) throws Exception {
+        return trustee.shardSign1(keyID, message);
+    }
+
+    private Round2Msg callShardSign2(TrusteeProxy trustee, byte[] keyID, byte[] R, byte[] chkI) throws Exception {
+        return trustee.shardSign2(keyID, R, chkI);
+    }
+
     private byte[] computeH(byte[] R, byte[] M, byte[] keyID) {
         int q = ByteUtils.bytesToInt(keyID);
-        return LMSHashUtils.computeH(
-                lmsPublicKey.getOtsParameters(),
-                lmsPublicKey.getI(), q, R, M);
+        return LMSHashUtils.computeH(lmsPublicKey.getOtsParameters(), lmsPublicKey.getI(), q, R, M);
     }
 
 }

@@ -74,8 +74,7 @@
                             <shadedClassifierName>fat</shadedClassifierName>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>es.uma.nicslab.hbs.cas.CasServer</mainClass>
-                                </transformer>
+                                    <mainClass>es.uma.nicslab.hbs.dealer.DealerMain</mainClass>                                </transformer>
                             </transformers>
                         </configuration>
                     </execution>

@@ -84,7 +84,7 @@ public class Trustee {
         }
 
         if (store.hasSigningState(keyIDInt)) {
-            return null; // ⊥ — ya hay una firma en curso
+            return null; // ⊥ — ya hay una firma en curso con ese keyID
         }
 
         store.saveSigningState(keyIDInt, message);

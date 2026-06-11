@@ -13,12 +13,6 @@ service TrusteeService {
 // --- Setup (una vez, en tiempo de dealer) ---
 message SetupRequest {
   bytes prf_key = 1; // K[t], 32 bytes
-  string cl_cid = 2; // CID de la coalition list en el CAS
-  string cas_url = 3;
-  int32 lmots_param_type = 4;  // getParametersForType() en el trustee
-  bytes I = 5;
-  int32 length_chk = 6;
-  int32 length_path = 7;
 }
 message SetupResponse {
   bool ok = 1;
@@ -28,7 +22,6 @@ message SetupResponse {
 message Sign1Request {
   int32 key_id = 1;
   bytes message = 2;
-  int32 n = 3;
 }
 message Sign1Response {
   bytes r_t = 1;

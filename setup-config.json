@@ -1,0 +1,10 @@
+{
+  "k": 3,
+  "lmsParams": "lms_sha256_n32_h5",
+  "lmotsParams": "sha256_n32_w4",
+  "coalitionPattern": [
+    [0, 1],
+    [1, 2],
+    [0, 2]
+  ]
+}

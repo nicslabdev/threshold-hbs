@@ -4,21 +4,27 @@ import es.uma.nicslab.hbs.lms.*;
 import es.uma.nicslab.hbs.model.*;
 import es.uma.nicslab.hbs.protocol.CASWriter;
 import es.uma.nicslab.hbs.protocol.CoalitionEntry;
-import es.uma.nicslab.hbs.protocol.InMemoryTrusteeState;
 import es.uma.nicslab.hbs.util.*;
 import org.bouncycastle.crypto.AsymmetricCipherKeyPair;
 
-import java.io.IOException;
 import java.security.SecureRandom;
 
 /**
  * Rol del Dealer en el protocolo threshold HBS.
  *
- * Responsabilidades:
+ * Responsabilidades exclusivamente criptográficas:
  *  1. Generar el keypair LMS.
- *  2. Para cada KeyID, generar el CRV y publicarlo en el CAS.
- *  3. Construir la Coalition List y publicarla en el CAS.
- *  4. Crear los Trustees con sus claves PRF y configurarlos.
+ *  2. Generar las claves PRF K[0..k-1] para cada trustee.
+ *  3. Para cada KeyID, generar el CRV y publicarlo en el CAS.
+ *  4. Construir la Coalition List y publicarla en el CAS.
+ *
+ * Lo que NO hace esta clase:
+ *  - No crea objetos Trustee ni llama a trustees remotos.
+ *  - No escribe el BulletinBoard.
+ *  - No sabe nada de red, Docker ni ficheros.
+ *
+ * DealerMain (en dealer-cli) orquesta el setup distribuido completo:
+ * llama a setup(), envía K[t] a cada trustee via gRPC, y escribe el BulletinBoard.
  */
 public class Dealer {
 
@@ -31,13 +37,12 @@ public class Dealer {
     }
 
     /**
-     * Ejecuta el Setup completo del esquema threshold.
+     * Ejecuta el Setup criptográfico completo.
      *
      * @param k          Número de trustees.
-     * @param coalitions Array de coaliciones: coalitions[keyID] = índices de trustees.
-     * @param parameters Parámetros LMS para la generación del keypair.
-     * @return SetupDealer con los trustees configurados, la clave pública,
-     *         la CL y el CID de la CL en el CAS.
+     * @param coalitions coalitions[keyID] = índices de trustees de esa coalición.
+     * @param parameters Parámetros LMS.
+     * @return SetupDealer con lmsPublicKey, cl, clCid y K[]. trustees es null.
      */
     public SetupDealer setup(int k, int[][] coalitions, LMSParameters parameters) throws Exception {
 
@@ -57,23 +62,18 @@ public class Dealer {
             throw new IllegalArgumentException("coalitions.length=" + coalitions.length + " debe ser igual a indexLimit=" + D);
         }
 
-        // --- 2. Generar claves PRF de los trustees ---
+        // --- 2. Generar claves PRF ---
         byte[][] K = new byte[k][PRF_KEY_LENGTH];
         for (int i = 0; i < k; i++) {
             rng.nextBytes(K[i]);
         }
 
-        // --- 3. Para cada KeyID: generar CRV y publicarlo en el CAS ---
-        LMOtsParameters otsParams = lmsPublic.getOtsParameters();
+        // --- 3. Generar CRVs y publicarlos en el CAS ---
         CoalitionEntry[] cl = new CoalitionEntry[D];
-
-        // Calculamos lengthCHK y lengthPath a partir del primer CRV generado.
-        // Son constantes para todos los KeyIDs con los mismos parámetros LM-OTS.
         int lengthCHK = -1;
         int lengthPath = -1;
 
         for (int keyID = 0; keyID < D; keyID++) {
-
             byte[] keyIdBytes = ByteUtils.intToBytes(keyID);
 
             if (lmsPrivate.getIndex() != keyID) {
@@ -82,7 +82,6 @@ public class Dealer {
 
             LMOtsPrivateKey otsKey = lmsPrivate.getCurrentOTSKey();
             LMSContext context = lmsPrivate.generateLMSContext();
-
             byte[] R = context.getC();
             byte[][] PATH = context.getPath();
             LMOtsChain chain = LM_OTS_WITH_CHAIN.lms_ots_generateChain(otsKey);
@@ -96,26 +95,18 @@ public class Dealer {
                 lengthPath = crv.getPATH().length;
             }
 
-            // Publicar el CRV en el CAS y obtener su CID
             String crvCid = cas.putCRV(keyID, crv);
             cl[keyID] = new CoalitionEntry(coalitions[keyID], crvCid);
         }
 
-        // --- 4. Publicar la Coalition List en el CAS ---
+        // --- 4. Publicar la CL en el CAS ---
         String clCid = cas.putCL(cl);
 
-        // --- 5. Crear y configurar los trustees ---
-        Trustee[] trustees = new Trustee[k];
-        for (int i = 0; i < k; i++) {
-            trustees[i] = new Trustee(K[i], otsParams, lmsPublic.getI(), lengthCHK, lengthPath, new InMemoryTrusteeState());
-            trustees[i].setup(i, cl);
-        }
-
-        return new SetupDealer(trustees, lmsPublic, cl, clCid);
+        // DealerMain es responsable de crear y contactar a los trustees
+        return new SetupDealer(lmsPublic, cl, clCid, K, lengthCHK, lengthPath);
     }
 
     private CRV KK_Setup(byte[][] keys, byte[] keyID, byte[][][] SK, byte[] R, byte[][] PATH) {
-
         int k = keys.length;
         int n = R.length;
 
@@ -124,7 +115,7 @@ public class Dealer {
             CHK[t] = PRF.evalAUTH(keys[t], keyID, R, n);
         }
 
-        byte[] CHKconcat = ByteUtils.concat(CHK);
+        byte[] CHKconcat  = ByteUtils.concat(CHK);
         byte[] PATHconcat = ByteUtils.concat(PATH);
 
         byte[][] sharesR = new byte[k][];
@@ -166,4 +157,5 @@ public class Dealer {
         }
         return keylist;
     }
+
 }

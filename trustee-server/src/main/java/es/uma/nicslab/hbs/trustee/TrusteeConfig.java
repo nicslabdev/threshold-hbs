@@ -1,14 +1,12 @@
 package es.uma.nicslab.hbs.trustee;
 
-import es.uma.nicslab.hbs.lms.LMOtsParameters;
-
 import java.io.*;
 import java.nio.file.*;
 
 /**
  * Configuración del esquema del Trustee.
  *
- * Agrupa los siete parámetros que llegan en el SetupRequest y los persiste
+ * Guarda la PRF_key que le llega en el SetupRequest y la persiste
  * en un fichero binario en el volumen Docker. Si el contenedor se reinicia,
  * el trustee puede reconstruir su estado leyendo este fichero.
  *
@@ -16,15 +14,6 @@ import java.nio.file.*;
  *
  *   [int]    longitud de K
  *   [bytes]  K (clave PRF secreta)
- *   [int]    lmots_param_type
- *   [int]    longitud de I
- *   [bytes]  I (identificador árbol Merkle)
- *   [int]    length_chk
- *   [int]    length_path
- *   [int]    longitud de cas_url en UTF-8
- *   [bytes]  cas_url
- *   [int]    longitud de cl_cid en UTF-8
- *   [bytes]  cl_cid
  *
  * IMPORTANTE: este fichero contiene la clave PRF K, que es material
  * criptográfico sensible. En producción debe estar en un volumen Docker
@@ -33,21 +22,9 @@ import java.nio.file.*;
 public class TrusteeConfig {
 
     private final byte[] K;
-    private final int lmotsParamType;
-    private final byte[] I;
-    private final int lengthCHK;
-    private final int lengthPath;
-    private final String casUrl;
-    private final String clCid;
 
-    public TrusteeConfig(byte[] K, int lmotsParamType, byte[] I, int lengthCHK, int lengthPath, String casUrl, String clCid) {
+    public TrusteeConfig(byte[] K) {
         this.K = K.clone();
-        this.lmotsParamType = lmotsParamType;
-        this.I = I.clone();
-        this.lengthCHK = lengthCHK;
-        this.lengthPath = lengthPath;
-        this.casUrl = casUrl;
-        this.clCid = clCid;
     }
 
     /**
@@ -60,12 +37,6 @@ public class TrusteeConfig {
         DataOutputStream dos = new DataOutputStream(baos);
 
         writeBytes(dos, K);
-        dos.writeInt(lmotsParamType);
-        writeBytes(dos, I);
-        dos.writeInt(lengthCHK);
-        dos.writeInt(lengthPath);
-        writeString(dos, casUrl);
-        writeString(dos, clCid);
 
         dos.flush();
 
@@ -96,14 +67,8 @@ public class TrusteeConfig {
         DataInputStream dis = new DataInputStream(new ByteArrayInputStream(data));
 
         byte[] K = readBytes(dis);
-        int lmotsParamType = dis.readInt();
-        byte[] I = readBytes(dis);
-        int lengthCHK = dis.readInt();
-        int lengthPath = dis.readInt();
-        String casUrl = readString(dis);
-        String clCid = readString(dis);
 
-        return new TrusteeConfig(K, lmotsParamType, I, lengthCHK, lengthPath, casUrl, clCid);
+        return new TrusteeConfig(K);
     }
 
     /**
@@ -118,37 +83,6 @@ public class TrusteeConfig {
         return K.clone();
     }
 
-    public int getLmotsParamType() {
-        return lmotsParamType;
-    }
-
-    public byte[] getI() {
-        return I.clone();
-    }
-
-    public int getLengthCHK() {
-        return lengthCHK;
-    }
-
-    public int getLengthPath() {
-        return lengthPath;
-    }
-
-    public String getCasUrl() {
-        return casUrl;
-    }
-
-    public String getClCid() {
-        return clCid;
-    }
-
-    /**
-     * Reconstruye el objeto LMOtsParameters a partir del tipo almacenado.
-     */
-    public LMOtsParameters getLmotsParameters() {
-        return LMOtsParameters.getParametersForType(lmotsParamType);
-    }
-
     private static void writeBytes(DataOutputStream dos, byte[] data) throws IOException {
         dos.writeInt(data.length);
         dos.write(data);
@@ -161,16 +95,4 @@ public class TrusteeConfig {
         return data;
     }
 
-    private static void writeString(DataOutputStream dos, String s) throws IOException {
-        byte[] bytes = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        dos.writeInt(bytes.length);
-        dos.write(bytes);
-    }
-
-    private static String readString(DataInputStream dis) throws IOException {
-        int len = dis.readInt();
-        byte[] bytes = new byte[len];
-        dis.readFully(bytes);
-        return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-    }
 }

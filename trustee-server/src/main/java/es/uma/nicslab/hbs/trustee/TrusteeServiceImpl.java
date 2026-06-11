@@ -3,9 +3,8 @@ package es.uma.nicslab.hbs.trustee;
 import es.uma.nicslab.hbs.cas.CASClient;
 import es.uma.nicslab.hbs.cas.HttpCASReader;
 import es.uma.nicslab.hbs.grpc.*;
-import es.uma.nicslab.hbs.lms.LMOtsParameters;
+import es.uma.nicslab.hbs.protocol.BulletinBoard;
 import es.uma.nicslab.hbs.protocol.CoalitionEntry;
-import es.uma.nicslab.hbs.protocol.SigningState;
 import es.uma.nicslab.hbs.roles.Trustee;
 import es.uma.nicslab.hbs.model.Round1Msg;
 import es.uma.nicslab.hbs.model.Round2Msg;
@@ -23,7 +22,7 @@ import java.util.logging.Logger;
  * persistente (TrusteeConfig + SQLiteTrusteeState).
  *
  * Flujo de Setup:
- *   1. Dealer llama a Setup con los 7 parámetros del SetupRequest.
+ *   1. Dealer llama a Setup con la PRF_key.
  *   2. TrusteeServiceImpl persiste la config en TrusteeConfig.
  *   3. Descarga la CL del CAS y puebla la keylist en SQLite.
  *   4. Construye el objeto Trustee listo para firmar.
@@ -38,29 +37,24 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
 
     private static final Logger log = Logger.getLogger(TrusteeServiceImpl.class.getName());
 
-    // Índice de este trustee en la coalición (0-based).
     private final int trusteeIndex;
-
-    // Ruta al fichero de configuración persistente.
-    private final Path configPath;
-
-    // Ruta al fichero SQLite de estado operacional.
-    private final String dbPath;
+    private final Path configPath; // ruta fichero config
+    private final String dbPath; // ruta fichero SQLite
+    private final Path bulletinBoardPath; // ruta fichero BulletinBoard
+    private final String casUrl; // URL de red
 
     // Objetos que se construyen en Setup y se usan en las rondas de firma.
     // Son null hasta que Setup se completa correctamente.
     private volatile Trustee trustee;
     private volatile SQLiteTrusteeState stateStore;
 
-    public TrusteeServiceImpl(int trusteeIndex, Path configPath, String dbPath) {
+    public TrusteeServiceImpl(int trusteeIndex, Path configPath, String dbPath, Path bulletinBoardPath, String casUrl) {
         this.trusteeIndex = trusteeIndex;
         this.configPath = configPath;
         this.dbPath = dbPath;
+        this.bulletinBoardPath = bulletinBoardPath;
+        this.casUrl = casUrl;
     }
-
-    // -------------------------------------------------------------------------
-    // Arranque: recuperar estado si el contenedor se reinició
-    // -------------------------------------------------------------------------
 
     /**
      * Intenta recuperar el estado del trustee desde disco si ya fue
@@ -81,10 +75,6 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
         }
     }
 
-    // -------------------------------------------------------------------------
-    // RPC: Setup
-    // -------------------------------------------------------------------------
-
     @Override
     public void setup(SetupRequest request, StreamObserver<SetupResponse> responseObserver) {
         try {
@@ -92,13 +82,7 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
 
             // 1. Construir y persistir la configuración
             TrusteeConfig config = new TrusteeConfig(
-                    request.getPrfKey().toByteArray(),
-                    request.getLmotsParamType(),
-                    request.getI().toByteArray(),
-                    request.getLengthChk(),
-                    request.getLengthPath(),
-                    request.getCasUrl(),
-                    request.getClCid()
+                    request.getPrfKey().toByteArray()
             );
             config.saveTo(configPath);
 
@@ -116,10 +100,6 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
         }
     }
 
-    // -------------------------------------------------------------------------
-    // RPC: ShardSign1
-    // -------------------------------------------------------------------------
-
     @Override
     public void shardSign1(Sign1Request request, StreamObserver<Sign1Response> responseObserver) {
         if (trustee == null) {
@@ -132,15 +112,15 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
         int keyID = request.getKeyId();
 
         try {
-            // Evaluamos la atómica reserva del KeyID en nuestro nuevo almacén SQLite
-            if (!stateStore.claimKeyID(keyID)) {
-                log.warning("Trustee " + trusteeIndex + ": Reutilización detectada o clave no asignada para keyID=" + keyID);
+
+            if (stateStore.hasAnySigningState()) {
+                log.warning("Trustee " + trusteeIndex + ": firma rechazada — ya hay una firma en curso.");
                 responseObserver.onNext(abort1());
                 responseObserver.onCompleted();
                 return;
             }
 
-            // Ejecutamos lógica pura de core criptográfico (ajusta conversión a bytes si tu core lo requiere)
+            // Ejecutamos lógica pura del core criptográfico
             byte[] keyIdBytes = ByteUtils.intToBytes(keyID);
             byte[] message = request.getMessage().toByteArray();
 
@@ -150,9 +130,7 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
                 log.warning("Trustee " + trusteeIndex + ": ShardSign1 devolvió ⊥ para keyID=" + keyID);
                 responseObserver.onNext(abort1());
             } else {
-                // Persistimos el estado en curso ("current") indexado por este KeyID atómicamente
-                stateStore.saveSigningState(keyID, message);
-
+                // No llamar a stateStore.saveSigningState aquí — Trustee ya lo hace internamente
                 responseObserver.onNext(Sign1Response.newBuilder()
                         .setRT(com.google.protobuf.ByteString.copyFrom(round1.getR_t()))
                         .setChkT(com.google.protobuf.ByteString.copyFrom(round1.getCHK_t()))
@@ -168,10 +146,6 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
         }
     }
 
-    // -------------------------------------------------------------------------
-    // RPC: ShardSign2
-    // -------------------------------------------------------------------------
-
     @Override
     public void shardSign2(Sign2Request request, StreamObserver<Sign2Response> responseObserver) {
         if (trustee == null) {
@@ -184,14 +158,6 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
         int keyID = request.getKeyId();
 
         try {
-            // Intento atómico de Read-and-Delete para limpiar la sesión en SQLite
-            SigningState session = stateStore.loadAndClearSigningState(keyID);
-            if (session == null) {
-                log.warning("Trustee " + trusteeIndex + ": No hay sesión de firma activa o re-entrada detectada para keyID=" + keyID);
-                responseObserver.onNext(abort2());
-                responseObserver.onCompleted();
-                return;
-            }
 
             byte[] R = request.getR().toByteArray();
             byte[] chkI = request.getChkI().toByteArray();
@@ -219,9 +185,7 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Inicialización interna
-    // -------------------------------------------------------------------------
+    public int getTrusteeIndex() { return trusteeIndex; }
 
     /**
      * Construye el Trustee y el SQLiteTrusteeState a partir de la config,
@@ -231,22 +195,23 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
      * (reinicios del contenedor).
      */
     private void initFromConfig(TrusteeConfig config, boolean isInitialSetup) throws Exception {
+
+        BulletinBoard board = BulletinBoard.loadFrom(bulletinBoardPath);
+
         // Crear el state store SQLite
         SQLiteTrusteeState store = new SQLiteTrusteeState(dbPath);
 
         // Descargar la CL del CAS para obtener los keyIDs de este trustee
-        CASClient casClient = new CASClient(config.getCasUrl());
+        CASClient casClient = new CASClient(casUrl);
         HttpCASReader casReader = new HttpCASReader(casClient);
-        CoalitionEntry[] cl = casReader.getCL(config.getClCid());
+        CoalitionEntry[] cl = casReader.getCL(board.getClCid());
 
-        // Construir el Trustee con la config persistida
-        LMOtsParameters params = config.getLmotsParameters();
         Trustee t = new Trustee(
                 config.getK(),
-                params,
-                config.getI(),
-                config.getLengthCHK(),
-                config.getLengthPath(),
+                board.getLmsPublicKey().getOtsParameters(),
+                board.getLmsPublicKey().getI(),
+                board.getLengthCHK(),
+                board.getLengthPATH(),
                 store
         );
 
@@ -260,10 +225,6 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
         this.trustee = t;
     }
 
-    // -------------------------------------------------------------------------
-    // Respuestas de abort
-    // -------------------------------------------------------------------------
-
     private static Sign1Response abort1() {
         return Sign1Response.newBuilder().setAbort(true).build();
     }
@@ -272,13 +233,4 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
         return Sign2Response.newBuilder().setAbort(true).build();
     }
 
-    // -------------------------------------------------------------------------
-    // Utilidades
-    // -------------------------------------------------------------------------
-
-    private static String bytesToHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder();
-        for (byte b : bytes) sb.append(String.format("%02x", b));
-        return sb.toString();
-    }
 }
