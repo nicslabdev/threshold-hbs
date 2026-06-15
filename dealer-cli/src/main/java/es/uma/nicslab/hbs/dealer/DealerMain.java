@@ -115,6 +115,7 @@ public class DealerMain {
         ManagedChannel channel = ManagedChannelBuilder
                 .forAddress(host, port)
                 .usePlaintext()
+                .defaultLoadBalancingPolicy("pick_first")
                 .build();
 
         try {

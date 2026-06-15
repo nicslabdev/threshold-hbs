@@ -41,10 +41,6 @@ public class CASServer {
         app.stop();
     }
 
-    // -------------------------------------------------------------------------
-    // Construcción de rutas
-    // -------------------------------------------------------------------------
-
     private Javalin buildApp() {
         Javalin javalin = Javalin.create();
         javalin.post("/blobs", this::handlePut);
@@ -52,10 +48,6 @@ public class CASServer {
 
         return javalin;
     }
-
-    // -------------------------------------------------------------------------
-    // Handlers
-    // -------------------------------------------------------------------------
 
     /**
      * POST /blobs
@@ -101,10 +93,6 @@ public class CASServer {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Punto de entrada
-    // -------------------------------------------------------------------------
-
     public static void main(String[] args) throws IOException {
         int port = intEnv("CAS_PORT", DEFAULT_PORT);
         String dataDir = strEnv("CAS_DATA_DIR", DEFAULT_DATA_DIR);
@@ -114,10 +102,6 @@ public class CASServer {
 
         System.out.printf("CAS arrancado en puerto %d, datos en %s%n", port, dataDir);
     }
-
-    // -------------------------------------------------------------------------
-    // Utilidades de configuración
-    // -------------------------------------------------------------------------
 
     private static int intEnv(String name, int defaultValue) {
         String val = System.getenv(name);

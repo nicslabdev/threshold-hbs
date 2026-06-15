@@ -38,6 +38,7 @@ public class GrpcTrusteeProxy implements TrusteeProxy {
         this.channel = ManagedChannelBuilder
                 .forAddress(host, port)
                 .usePlaintext()  // sin TLS en el prototipo. Es suficiente porque los contenedores se comunican dentro de la red privada de Docker. En producción se sustituiría por .useTransportSecurity() con certificados
+                .defaultLoadBalancingPolicy("pick_first")
                 .build();
         this.stub = TrusteeServiceGrpc.newBlockingStub(channel); // el stub bloqueante es el más simple, la llamada espera hasta recibir la respuesta
     }
