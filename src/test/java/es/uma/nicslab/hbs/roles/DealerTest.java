@@ -3,155 +3,124 @@ package es.uma.nicslab.hbs.roles;
 import es.uma.nicslab.hbs.lms.*;
 import es.uma.nicslab.hbs.model.*;
 import es.uma.nicslab.hbs.protocol.PublicBulletinBoard;
-import es.uma.nicslab.hbs.util.*;
 
-import org.bouncycastle.crypto.AsymmetricCipherKeyPair;
-
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import java.security.SecureRandom;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 public class DealerTest {
 
-    /* private byte[] R;
-    private byte[][] PATH;
-    private byte[][][] SK;
-    private byte[][] keys;
-    private int n;
-    private int k;
-    private byte[] keyIdBytes;
-    private PublicBulletinBoard board;
+    private static final LMSParameters LMS_PARAMS = new LMSParameters(
+            LMSigParameters.lms_sha256_n32_h5,
+            LMOtsParameters.sha256_n32_w4
+    );
+    private static final int INDEX_LIMIT = 32; // 2^h con h=5
+    private static final int NUM_TRUSTEES = 3;
 
-    @BeforeEach
-    void setup() {
-
-        SecureRandom rng = new SecureRandom();
-        k = 2;
-
-        // Generar claves PRF de los trustees
-        keys = new byte[k][32];
-        for (int t = 0; t < k; t++) {
-            rng.nextBytes(keys[t]);
-        }
-
-        // Generar par de claves LMS
-        LMSKeyGenerationParameters genParams = new LMSKeyGenerationParameters(
-                new LMSParameters(LMSigParameters.lms_sha256_n32_h5, LMOtsParameters.sha256_n32_w4),
-                rng
-        );
-        LMSKeyPairGenerator gen = new LMSKeyPairGenerator();
-        gen.init(genParams);
-        AsymmetricCipherKeyPair keyPair = gen.generateKeyPair();
-        LMSPrivateKeyParameters lmsPrivate = (LMSPrivateKeyParameters) keyPair.getPrivate();
-        LMSPublicKeyParameters lmsPublic = (LMSPublicKeyParameters) keyPair.getPublic();
-
-        LMOtsParameters parameter = lmsPrivate.getOtsParameters();
-        byte[] I = lmsPrivate.getI();
-
-        int keyId = lmsPrivate.getIndex();
-        keyIdBytes = ByteUtils.intToBytes(keyId);
-
-        // Obtener clave OTS y generar cadena SK completa
-        LMOtsPrivateKey otsPrivateKey = lmsPrivate.getCurrentOTSKey();
-        n = otsPrivateKey.getParameter().getN();
-
-        LMSContext context = lmsPrivate.generateLMSContext();
-        PATH = context.getPath();
-
-        LMOtsChain chain = LM_OTS_WITH_CHAIN.lms_ots_generateChain(otsPrivateKey);
-        SK = chain.getSK();
-
-        R = new byte[n];
-        rng.nextBytes(R);
-
-        board = new PublicBulletinBoard(lmsPublic, parameter, I);
-
-        Dealer dealer = new Dealer(board);
-        dealer.KK_Setup(keys, keyIdBytes, SK, R, PATH);
-
-        CRV CRV = board.getCRV();
-
-        // System.out.println(CRV.toString());
-    }
-
-    @Test
-    void testRReconstructed() {
-        // sharesR[t] = PRF^R_{K[t]}(KeyID, n)
-        byte[][] sharesR = new byte[k][];
-        for (int t = 0; t < k; t++) {
-            sharesR[t] = PRF.evalR(keys[t], keyIdBytes, n);
-        }
-
-        // CRV.R ⊕ sharesR[0] ⊕ ... ⊕ sharesR[k-1] == R original
-        byte[] reconstructed = ByteUtils.xorAll(board.getCRV().getR(), sharesR);
-        assertArrayEquals(R, reconstructed, "R no se reconstruye correctamente");
-    }
-
-    @Test
-    void testCHKReconstructed() {
-        // CHK[t] = PRF^Auth_{K[t]}(KeyID, R, n)
-        byte[][] CHK = new byte[k][];
-        for (int t = 0; t < k; t++) {
-            CHK[t] = PRF.evalAUTH(keys[t], keyIdBytes, R, n);
-        }
-        byte[] CHKconcat = ByteUtils.concat(CHK);
-
-        // sharesCHK[t] = PRF^CHK_{K[t]}(KeyID, |CHKconcat|)
-        byte[][] sharesCHK = new byte[k][];
-        for (int t = 0; t < k; t++) {
-            sharesCHK[t] = PRF.evalCHK(keys[t], keyIdBytes, CHKconcat.length);
-        }
-
-        // CRV.CHK ⊕ sharesCHK[0] ⊕ ... ⊕ sharesCHK[k-1] == CHKconcat original
-        byte[] reconstructed = ByteUtils.xorAll(board.getCRV().getCHK(), sharesCHK);
-        assertArrayEquals(CHKconcat, reconstructed, "CHK no se reconstruye correctamente");
-    }
-
-    @Test
-    void testPATHReconstructed() {
-        byte[] PATHconcat = ByteUtils.concat(PATH);
-
-        // sharesPATH[t] = PRF^PATH_{K[t]}(KeyID, |PATHconcat|)
-        byte[][] sharesPATH = new byte[k][];
-        for (int t = 0; t < k; t++) {
-            sharesPATH[t] = PRF.evalPATH(keys[t], keyIdBytes, PATHconcat.length);
-        }
-
-        // CRV.PATH ⊕ sharesPATH[0] ⊕ ... ⊕ sharesPATH[k-1] == PATHconcat original
-        byte[] reconstructed = ByteUtils.xorAll(board.getCRV().getPATH(), sharesPATH);
-        assertArrayEquals(PATHconcat, reconstructed, "PATH no se reconstruye correctamente");
-    }
-
-    @Test
-    void testSKReconstructed() {
-        int chains = SK.length;
-        int steps  = SK[0].length;
-
-        // sharesSK[t][i][j] = PRF^Chain_{K[t]}(KeyID, i, j, n)
-        byte[][][][] sharesSK = new byte[k][chains][steps][];
-        for (int t = 0; t < k; t++) {
-            for (int i = 0; i < chains; i++) {
-                for (int j = 0; j < steps; j++) {
-                    sharesSK[t][i][j] = PRF.evalCHAIN(keys[t], keyIdBytes, i, j, n);
-                }
+    /** Coaliciones válidas de tamaño 2, rotando entre {0,1,2}. */
+    private int[][] validCL() {
+        int[][] CL = new int[INDEX_LIMIT][];
+        for (int keyID = 0; keyID < INDEX_LIMIT; keyID++) {
+            switch (keyID % 3) {
+                case 0 -> CL[keyID] = new int[]{0, 1};
+                case 1 -> CL[keyID] = new int[]{1, 2};
+                case 2 -> CL[keyID] = new int[]{0, 2};
             }
         }
+        return CL;
+    }
 
-        // Para cada (i,j): CRV.SK[i][j] ⊕ sharesSK[0][i][j] ⊕ ... ⊕ sharesSK[k-1][i][j] == SK[i][j] original
-        byte[][][] crvSK = board.getCRV().getSK();
-        for (int i = 0; i < chains; i++) {
-            for (int j = 0; j < steps; j++) {
-                byte[] reconstructed = crvSK[i][j].clone();
-                for (int t = 0; t < k; t++) {
-                    reconstructed = ByteUtils.xorBytes(reconstructed, sharesSK[t][i][j]);
-                }
-                assertArrayEquals(SK[i][j], reconstructed,
-                        "SK[" + i + "][" + j + "] no se reconstruye correctamente");
-            }
+    @Test
+    void testShardSetupProducesBoardWithCorrectDimensions() {
+        int[][] CL = validCL();
+        Dealer dealer = new Dealer();
+        SetupDealer setup = dealer.ShardSetup(NUM_TRUSTEES, CL, LMS_PARAMS);
+
+        assertNotNull(setup);
+        assertEquals(NUM_TRUSTEES, setup.getTrustees().length, "debe crear un Trustee por cada k");
+
+        PublicBulletinBoard board = setup.getBoard();
+        assertNotNull(board.getCRV(), "el CRV debe publicarse en el board");
+        assertEquals(INDEX_LIMIT, board.getCRV().length, "debe haber un CRV por cada KeyID");
+    }
+
+    @Test
+    void testCRVFieldSizesMatchLMSParameters() {
+        int[][] CL = validCL();
+        Dealer dealer = new Dealer();
+        SetupDealer setup = dealer.ShardSetup(NUM_TRUSTEES, CL, LMS_PARAMS);
+        PublicBulletinBoard board = setup.getBoard();
+
+        int n = board.getParameter().getN();
+        int p = board.getParameter().getP();
+        int steps = 1 << board.getParameter().getW(); // 2^w
+        int h = 5;
+
+        int keyID = 0;
+        CRV crv = board.getCRV(keyID);
+        int coalitionSize = CL[keyID].length;
+
+        assertEquals(n, crv.getR().length, "CRV.R debe tener n bytes");
+        assertEquals(coalitionSize * n, crv.getCHK().length, "CRV.CHK debe tener |coalición|*n bytes (concat de un CHK[t] por trustee)");
+        assertEquals(h * n, crv.getPATH().length, "CRV.PATH debe tener h*n bytes");
+
+        byte[][][] SK = crv.getSK();
+        assertEquals(p, SK.length, "CRV.SK debe tener p cadenas");
+        assertEquals(steps, SK[0].length, "cada cadena debe tener 2^w pasos");
+        assertEquals(n, SK[0][0].length, "cada paso de la cadena debe tener n bytes");
+    }
+
+    @Test
+    void testDifferentKeyIDsProduceDifferentCRV() {
+        int[][] CL = validCL();
+        Dealer dealer = new Dealer();
+        SetupDealer setup = dealer.ShardSetup(NUM_TRUSTEES, CL, LMS_PARAMS);
+        PublicBulletinBoard board = setup.getBoard();
+
+        // Sanity check: dos KeyIDs distintos no deben producir el mismo CRV.R
+        byte[] r0 = board.getCRV(0).getR();
+        byte[] r1 = board.getCRV(1).getR();
+        assertFalse(java.util.Arrays.equals(r0, r1), "CRV.R no debería coincidir entre KeyIDs distintos");
+    }
+
+    @Test
+    void testShardSetupThrowsWhenCLLengthMismatchesIndexLimit() {
+        // indexLimit para h=5 es 32; aquí forzamos un CL más corto
+        int[][] shortCL = new int[16][];
+        for (int keyID = 0; keyID < shortCL.length; keyID++) {
+            shortCL[keyID] = new int[]{0, 1};
         }
-    } */
+
+        Dealer dealer = new Dealer();
+        assertThrows(IllegalArgumentException.class,
+                () -> dealer.ShardSetup(NUM_TRUSTEES, shortCL, LMS_PARAMS),
+                "CL.length distinto de indexLimit debe lanzar IllegalArgumentException");
+    }
+
+    @Test
+    void testShardSetupThrowsWhenCoalitionIndexOutOfBounds() {
+        int[][] CL = validCL();
+        // Coalición con un índice de trustee inexistente (solo hay 0..NUM_TRUSTEES-1)
+        CL[0] = new int[]{0, NUM_TRUSTEES + 2};
+
+        Dealer dealer = new Dealer();
+        assertThrows(IllegalArgumentException.class,
+                () -> dealer.ShardSetup(NUM_TRUSTEES, CL, LMS_PARAMS),
+                "un índice de coalición fuera de rango debe lanzar IllegalArgumentException");
+    }
+
+    @Test
+    void testBoardExposesConsistentMetadata() {
+        int[][] CL = validCL();
+        Dealer dealer = new Dealer();
+        SetupDealer setup = dealer.ShardSetup(NUM_TRUSTEES, CL, LMS_PARAMS);
+        PublicBulletinBoard board = setup.getBoard();
+
+        assertNotNull(board.getPublicKey(), "la clave pública LMS debe quedar publicada en el board");
+        assertNotNull(board.getI(), "el identificador I del árbol debe quedar publicado");
+        assertTrue(board.getI().length > 0);
+        assertSame(CL, board.getCL(), "el board debe exponer la misma CL usada en el setup");
+        assertEquals(LMS_PARAMS.getLMOTSParam(), board.getParameter(), "los parámetros OTS publicados deben coincidir con los usados en el setup");
+    }
 
 }

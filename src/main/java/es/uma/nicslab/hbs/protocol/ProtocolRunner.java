@@ -16,6 +16,7 @@ import java.security.SecureRandom;
 
 public class ProtocolRunner {
 
+    // CODIGO DE PRUEBA PARA UNA UNICA HOJA
     /*public static void main(String[] args) throws Exception {
 
         SecureRandom rng = new SecureRandom();
@@ -184,7 +185,7 @@ public class ProtocolRunner {
 
     public static void main(String[] args) throws Exception {
 
-        System.out.println("=== Threshold-HBS — Sección 4: Distributed Signing Protocol ===\n");
+        System.out.println("Threshold-HBS: Distributed Signing Protocol\n");
 
         // ── Parámetros LMS ────────────────────────────────────────────────────
         // LMS_SHA256_M32_H5  → árbol de altura 5 → 2^5 = 32 KeyIDs disponibles
@@ -223,8 +224,7 @@ public class ProtocolRunner {
             trustees[t].TrusteeSetup(t, CL);
         }
 
-        System.out.println("[Setup] Completado. Trustees: " + n +
-                ", KeyIDs disponibles: " + indexLimit);
+        System.out.println("[Setup] Completado. Trustees: " + n + ", KeyIDs disponibles: " + indexLimit);
         for (int t = 0; t < n; t++) {
             System.out.println("  Trustee " + t + " → coaliciones: " + coalitionsOf(t, CL));
         }
@@ -244,8 +244,7 @@ public class ProtocolRunner {
         for (int keyID = 0; keyID < messages.length; keyID++) {
 
             int[] coalition = CL[keyID];
-            System.out.printf("%n[KeyID=%d] Coalición: {%s} — Mensaje: \"%s\"%n",
-                    keyID, coalitionStr(coalition), new String(messages[keyID]));
+            System.out.printf("%n[KeyID=%d] Coalición: {%s} — Mensaje: \"%s\"%n", keyID, coalitionStr(coalition), new String(messages[keyID]));
 
             ThresholdSignature sig = aggregator.AggregatorSign(messages[keyID], keyID);
 
@@ -277,7 +276,7 @@ public class ProtocolRunner {
         }
 
         // ── Resultado final ───────────────────────────────────────────────────
-        System.out.println("\n=== Resultado: " + (allOk ? "TODOS LOS TESTS PASARON ✓" : "ALGÚN TEST FALLÓ ✗") + " ===");
+        System.out.println("\nResultado: " + (allOk ? "TODOS LOS TESTS PASARON ✓" : "ALGÚN TEST FALLÓ ✗"));
     }
 
     /**
