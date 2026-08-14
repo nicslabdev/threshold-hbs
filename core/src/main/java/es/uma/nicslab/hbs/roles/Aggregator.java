@@ -7,21 +7,33 @@ import es.uma.nicslab.hbs.protocol.CoalitionEntry;
 import es.uma.nicslab.hbs.protocol.TrusteeProxy;
 import es.uma.nicslab.hbs.util.ByteUtils;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+
 /**
  * Rol del Aggregator en el protocolo threshold HBS.
  *
  * Usa TrusteeProxy[] en lugar de Trustee[] para ser agnóstico sobre si
  * los trustees son locales (tests) o remotos via gRPC (producción).
  *
- * Las llamadas a trustees dentro de cada ronda son secuenciales.
- * callShardSign1 y callShardSign2 son puntos de extensión para migrar
- * a CompletableFuture en el futuro sin cambiar el flujo principal.
+ * Las llamadas a los trustees se ejecutan en paralelo dentro de cada ronda.
+ * La Round 2 solo comienza una vez completadas todas las llamadas de Round 1.
  */
 public class Aggregator {
 
     private final LMSPublicKeyParameters lmsPublicKey;
     private final CASReader cas;
     private final String clCid;
+
+    private final ExecutorService trusteeExecutor =
+        Executors.newCachedThreadPool(r -> {
+            Thread t = new Thread(r, "kll-trustee-rpc");
+            t.setDaemon(true);
+            return t;
+        });
 
     public Aggregator(LMSPublicKeyParameters lmsPublicKey, CASReader cas, String clCid) {
         this.lmsPublicKey = lmsPublicKey;
@@ -46,9 +58,27 @@ public class Aggregator {
         byte[][] sharesR = new byte[k][];
         byte[][] sharesCHK = new byte[k][];
 
+        List<Future<Round1Msg>> round1Futures = new ArrayList<>(k);
+
         for (int i = 0; i < k; i++) {
-            Round1Msg round1 = callShardSign1(trustees[C[i]], keyIdBytes, message);
+            final int pos = i;
+
+            round1Futures.add(
+                    trusteeExecutor.submit(() ->
+                            callShardSign1(
+                                    trustees[C[pos]],
+                                    keyIdBytes,
+                                    message
+                            )
+                    )
+            );
+        }
+
+        for (int i = 0; i < k; i++) {
+            Round1Msg round1 = round1Futures.get(i).get();
+
             if (round1 == null) return null;
+
             sharesR[i] = round1.getR_t();
             sharesCHK[i] = round1.getCHK_t();
         }
@@ -61,9 +91,28 @@ public class Aggregator {
         byte[][] sharesPATH = new byte[k][];
         byte[][] sharesZ = new byte[k][];
 
+        List<Future<Round2Msg>> round2Futures = new ArrayList<>(k);
+
         for (int i = 0; i < k; i++) {
-            Round2Msg round2 = callShardSign2(trustees[C[i]], keyIdBytes, R, CHK[i]);
+            final int pos = i;
+
+            round2Futures.add(
+                    trusteeExecutor.submit(() ->
+                            callShardSign2(
+                                    trustees[C[pos]],
+                                    keyIdBytes,
+                                    R,
+                                    CHK[pos]
+                            )
+                    )
+            );
+        }
+
+        for (int i = 0; i < k; i++) {
+            Round2Msg round2 = round2Futures.get(i).get();
+
             if (round2 == null) return null;
+
             sharesPATH[i] = round2.getPATH_t();
             sharesZ[i] = round2.getZ_t();
         }

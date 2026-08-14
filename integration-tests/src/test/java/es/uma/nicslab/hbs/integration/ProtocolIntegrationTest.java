@@ -16,6 +16,10 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.Arrays;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
@@ -294,6 +298,52 @@ class ProtocolIntegrationTest {
         assertEquals(result.getLengthPath(), loaded.getLengthPATH());
     }
 
+    @Test
+    void aggregator_ejecuta_trustees_en_paralelo_por_ronda() throws Exception {
+
+        int k = 3;
+
+        int[][] coalitions = buildCoalitions(k, 32);
+
+        Dealer dealer = new Dealer(casWriter);
+        SetupDealer result = dealer.setup(k, coalitions, LMS_PARAMS);
+
+        Aggregator agg = new Aggregator(
+                result.getLmsPublicKey(),
+                casReader,
+                result.getClCid()
+        );
+
+        Trustee[] trustees = createTrustees(result, false);
+
+        CountDownLatch round1Entered = new CountDownLatch(k);
+        CountDownLatch round2Entered = new CountDownLatch(k);
+        AtomicInteger round1Completed = new AtomicInteger(0);
+
+        TrusteeProxy[] proxies = new TrusteeProxy[k];
+
+        for (int i = 0; i < k; i++) {
+
+                TrusteeProxy delegate = new LocalTrusteeProxy(trustees[i]);
+
+                proxies[i] = new BarrierTrusteeProxy(
+                        delegate,
+                        round1Entered,
+                        round2Entered,
+                        round1Completed,
+                        k
+                );
+        }
+
+        byte[] message =
+                "parallel trustee execution".getBytes();
+
+        ThresholdSignature sig =
+                agg.aggregatorSign(message, 0, proxies);
+
+        assertNotNull(sig);
+    }
+
     // -------------------------------------------------------------------------
     // Auxiliares
     // -------------------------------------------------------------------------
@@ -305,5 +355,68 @@ class ProtocolIntegrationTest {
         for (int keyID = 0; keyID < D; keyID++) cl[keyID] = all.clone();
         return cl;
     }
+
+    private static class BarrierTrusteeProxy implements TrusteeProxy {
+
+        private final TrusteeProxy delegate;
+        private final CountDownLatch round1Entered;
+        private final CountDownLatch round2Entered;
+        private final AtomicInteger round1Completed;
+        private final int participants;
+
+        BarrierTrusteeProxy(
+                TrusteeProxy delegate,
+                CountDownLatch round1Entered,
+                CountDownLatch round2Entered,
+                AtomicInteger round1Completed,
+                int participants) {
+
+                this.delegate = delegate;
+                this.round1Entered = round1Entered;
+                this.round2Entered = round2Entered;
+                this.round1Completed = round1Completed;
+                this.participants = participants;
+        }
+
+        @Override
+        public Round1Msg shardSign1(byte[] keyID, byte[] message) throws Exception {
+
+                round1Entered.countDown();
+
+                if (!round1Entered.await(2, TimeUnit.SECONDS)) {
+                throw new IllegalStateException(
+                        "Round 1 trustee calls were not executed concurrently");
+                }
+
+                Round1Msg result = delegate.shardSign1(keyID, message);
+                round1Completed.incrementAndGet();
+
+                return result;
+        }
+
+        @Override
+        public Round2Msg shardSign2(
+                byte[] keyID,
+                byte[] R,
+                byte[] chkI) throws Exception {
+
+                // Round 2 must not start until every Trustee completed Round 1.
+                if (round1Completed.get() != participants) {
+                throw new IllegalStateException(
+                        "Round 2 started before all Round 1 calls completed");
+                }
+
+                round2Entered.countDown();
+
+                if (!round2Entered.await(2, TimeUnit.SECONDS)) {
+                throw new IllegalStateException(
+                        "Round 2 trustee calls were not executed concurrently");
+                }
+
+                return delegate.shardSign2(keyID, R, chkI);
+        }
+        }
+
+    
 
 }
