@@ -17,6 +17,12 @@ import java.util.concurrent.TimeUnit;
  * Cada instancia representa un único trustee identificado por su
  * dirección (host:port).
  *
+ * Además registra, cuando KLL_METRICS_FILE está configurado, el tamaño
+ * serializado Protobuf de request y response para cada RPC de firma.
+ *
+ * Los byte counts representan payload Protobuf de aplicación. No incluyen
+ * framing gRPC/HTTP2, TCP/IP ni otros headers de transporte.
+ *
  * Uso típico:
  *   GrpcTrusteeProxy proxy = new GrpcTrusteeProxy("trustee-1", 9090);
  *   Round1Msg r1 = proxy.shardSign1(keyID, message);
@@ -52,16 +58,37 @@ public class GrpcTrusteeProxy implements TrusteeProxy {
                 .setMessage(com.google.protobuf.ByteString.copyFrom(message))
                 .build();
 
-        Sign1Response response = stub.shardSign1(request);
+        int requestProtoBytes = request.getSerializedSize();
+        int responseProtoBytes = -1;
+        String status = "exception";
 
-        if (response.getAbort()) {
-            return null; // ⊥ — el trustee rechazó la firma
+        try {
+            Sign1Response response = stub.shardSign1(request);
+            responseProtoBytes = response.getSerializedSize();
+
+            if (response.getAbort()) {
+                status = "abort";
+                return null; // ⊥ — el trustee rechazó la firma
+            }
+
+            Round1Msg result =
+                new Round1Msg(
+                    response.getRT().toByteArray(),
+                    response.getChkT().toByteArray()
+                );
+
+            status = "success";
+
+            return result;
+        } finally {
+            emitByteMetrics(
+                    "grpc_client_round1",
+                    keyIDInt,
+                    status,
+                    requestProtoBytes,
+                    responseProtoBytes
+            );
         }
-
-        return new Round1Msg(
-                response.getRT().toByteArray(),
-                response.getChkT().toByteArray()
-        );
     }
 
     @Override
@@ -74,16 +101,82 @@ public class GrpcTrusteeProxy implements TrusteeProxy {
                 .setChkI(com.google.protobuf.ByteString.copyFrom(chkI))
                 .build();
 
-        Sign2Response response = stub.shardSign2(request);
+        int requestProtoBytes = request.getSerializedSize();
+        int responseProtoBytes = -1;
+        String status = "exception";
 
-        if (response.getAbort()) {
-            return null; // ⊥ — el trustee rechazó la firma
+        try {
+            Sign2Response response = stub.shardSign2(request);
+            responseProtoBytes = response.getSerializedSize();
+
+            if (response.getAbort()) {
+                status = "abort";
+                return null; // ⊥ — el trustee rechazó la firma
+            }
+
+            Round2Msg result =
+                new Round2Msg(
+                    response.getZT().toByteArray(),
+                    response.getPathT().toByteArray()
+                );
+
+            status = "success";
+
+            return result;
+        } finally {
+
+            emitByteMetrics(
+                "grpc_client_round2",
+                keyIDInt,
+                status,
+                requestProtoBytes,
+                responseProtoBytes
+            );
+        }
+    }
+
+    /**
+     * Emite una línea JSONL con los tamaños serializados Protobuf del RPC.
+     *
+     * responseProtoBytes = -1 indica que la llamada terminó con una
+     * excepción antes de obtener una respuesta gRPC.
+     */
+    private void emitByteMetrics(
+            String event,
+            int keyID,
+            String status,
+            int requestProtoBytes,
+            int responseProtoBytes
+    ) {
+
+        if (!AggregatorMetricsSink.isEnabled()) {
+            return;
         }
 
-        return new Round2Msg(
-                response.getZT().toByteArray(),
-                response.getPathT().toByteArray()
-        );
+        StringBuilder json = new StringBuilder(256);
+
+        json.append('{');
+        json.append("\"event\":\"").append(event).append('"');
+        json.append(",\"timestamp_ms\":").append(System.currentTimeMillis());
+        json.append(",\"trustee_address\":\"").append(address).append('"');
+        json.append(",\"key_id\":").append(keyID);
+        json.append(",\"status\":\"").append(status).append('"');
+        json.append(",\"request_proto_bytes\":").append(requestProtoBytes);
+        json.append(",\"response_proto_bytes\":").append(responseProtoBytes);
+
+        if (responseProtoBytes >= 0) {
+            json.append(",\"total_proto_bytes\":")
+                    .append(
+                            requestProtoBytes
+                                    + responseProtoBytes
+                    );
+        } else {
+            json.append(",\"total_proto_bytes\":-1");
+        }
+
+        json.append('}');
+
+        AggregatorMetricsSink.emit(json.toString());
     }
 
     /**
@@ -97,5 +190,4 @@ public class GrpcTrusteeProxy implements TrusteeProxy {
     public String getAddress() {
         return address;
     }
-
 }

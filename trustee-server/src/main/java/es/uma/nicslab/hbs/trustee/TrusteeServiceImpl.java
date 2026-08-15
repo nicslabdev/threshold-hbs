@@ -6,6 +6,7 @@ import es.uma.nicslab.hbs.grpc.*;
 import es.uma.nicslab.hbs.protocol.BulletinBoard;
 import es.uma.nicslab.hbs.protocol.CoalitionEntry;
 import es.uma.nicslab.hbs.roles.Trustee;
+import es.uma.nicslab.hbs.metrics.AsyncJsonlMetricsWriter;
 import es.uma.nicslab.hbs.model.Round1Msg;
 import es.uma.nicslab.hbs.model.Round2Msg;
 import es.uma.nicslab.hbs.util.ByteUtils;
@@ -36,6 +37,7 @@ import java.util.logging.Logger;
 public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBase {
 
     private static final Logger log = Logger.getLogger(TrusteeServiceImpl.class.getName());
+    private static final AsyncJsonlMetricsWriter metricsWriter = AsyncJsonlMetricsWriter.fromEnvironment("KLL_METRICS_FILE");
 
     private final int trusteeIndex;
     private final Path configPath; // ruta fichero config
@@ -102,18 +104,22 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
 
     @Override
     public void shardSign1(Sign1Request request, StreamObserver<Sign1Response> responseObserver) {
-        if (trustee == null) {
-            log.warning("Trustee " + trusteeIndex + ": ShardSign1 rechazado — Setup no completado.");
-            responseObserver.onNext(abort1());
-            responseObserver.onCompleted();
-            return;
-        }
+        final long rpcStart = System.nanoTime();
+        final int keyID = request.getKeyId();
 
-        int keyID = request.getKeyId();
+        String status = "exception";
 
         try {
+            if (trustee == null) {
+                status = "setup_not_completed";
+                log.warning("Trustee " + trusteeIndex + ": ShardSign1 rechazado — Setup no completado.");
+                responseObserver.onNext(abort1());
+                responseObserver.onCompleted();
+                return;
+            }
 
             if (stateStore.hasAnySigningState()) {
+                status = "signing_in_progress";
                 log.warning("Trustee " + trusteeIndex + ": firma rechazada — ya hay una firma en curso.");
                 responseObserver.onNext(abort1());
                 responseObserver.onCompleted();
@@ -127,9 +133,11 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
             Round1Msg round1 = trustee.shardSign1(keyIdBytes, message);
 
             if (round1 == null) {
+                status = "abort";
                 log.warning("Trustee " + trusteeIndex + ": ShardSign1 devolvió ⊥ para keyID=" + keyID);
                 responseObserver.onNext(abort1());
             } else {
+                status = "success";
                 // No llamar a stateStore.saveSigningState aquí — Trustee ya lo hace internamente
                 responseObserver.onNext(Sign1Response.newBuilder()
                         .setRT(com.google.protobuf.ByteString.copyFrom(round1.getR_t()))
@@ -140,24 +148,37 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
             responseObserver.onCompleted();
 
         } catch (Exception e) {
+            status = "exception";
             log.severe("Trustee " + trusteeIndex + ": error en ShardSign1 para keyID=" + keyID + ": " + e.getMessage());
             responseObserver.onNext(abort1());
             responseObserver.onCompleted();
+        } finally {
+            long serverHandlerNs = System.nanoTime() - rpcStart;
+
+            emitRpcMetrics(
+                    "trustee_round1",
+                    keyID,
+                    status,
+                    serverHandlerNs
+            );
         }
     }
 
     @Override
     public void shardSign2(Sign2Request request, StreamObserver<Sign2Response> responseObserver) {
-        if (trustee == null) {
-            log.warning("Trustee " + trusteeIndex + ": ShardSign2 rechazado — Setup no completado.");
-            responseObserver.onNext(abort2());
-            responseObserver.onCompleted();
-            return;
-        }
+        final long rpcStart = System.nanoTime();
+        final int keyID = request.getKeyId();
 
-        int keyID = request.getKeyId();
+        String status = "exception";
 
         try {
+            if (trustee == null) {
+                status = "setup_not_completed";
+                log.warning("Trustee " + trusteeIndex + ": ShardSign2 rechazado — Setup no completado.");
+                responseObserver.onNext(abort2());
+                responseObserver.onCompleted();
+                return;
+            }
 
             byte[] R = request.getR().toByteArray();
             byte[] chkI = request.getChkI().toByteArray();
@@ -167,9 +188,11 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
             Round2Msg round2 = trustee.shardSign2(keyIdBytes, R, chkI);
 
             if (round2 == null) {
+                status = "abort";
                 log.warning("Trustee " + trusteeIndex + ": ShardSign2 devolvió ⊥ para keyID=" + keyID);
                 responseObserver.onNext(abort2());
             } else {
+                status = "success";
                 responseObserver.onNext(Sign2Response.newBuilder()
                         .setPathT(com.google.protobuf.ByteString.copyFrom(round2.getPATH_t()))
                         .setZT(com.google.protobuf.ByteString.copyFrom(round2.getZ_t()))
@@ -179,9 +202,19 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
             responseObserver.onCompleted();
 
         } catch (Exception e) {
+            status = "exception";
             log.severe("Trustee " + trusteeIndex + ": error en ShardSign2 para keyID=" + keyID + ": " + e.getMessage());
             responseObserver.onNext(abort2());
             responseObserver.onCompleted();
+        } finally {
+            long serverHandlerNs = System.nanoTime() - rpcStart;
+
+            emitRpcMetrics(
+                    "trustee_round2",
+                    keyID,
+                    status,
+                    serverHandlerNs
+            );
         }
     }
 
@@ -223,6 +256,31 @@ public class TrusteeServiceImpl extends TrusteeServiceGrpc.TrusteeServiceImplBas
         // Asignación atómica: el trustee solo es visible cuando está listo
         this.stateStore = store;
         this.trustee = t;
+    }
+
+    private void emitRpcMetrics(
+        String event,
+        int keyID,
+        String status,
+        long serverHandlerNs
+    ) {
+
+        if (!metricsWriter.isEnabled()) {
+            return;
+        }
+
+        StringBuilder json = new StringBuilder(192);
+
+        json.append('{');
+        json.append("\"event\":\"").append(event).append('"');
+        json.append(",\"timestamp_ms\":").append(System.currentTimeMillis());
+        json.append(",\"trustee_index\":").append(trusteeIndex);
+        json.append(",\"key_id\":").append(keyID);
+        json.append(",\"status\":\"").append(status).append('"');
+        json.append(",\"server_handler_ns\":").append(serverHandlerNs);
+        json.append('}');
+
+        metricsWriter.emit(json.toString());
     }
 
     private static Sign1Response abort1() {
