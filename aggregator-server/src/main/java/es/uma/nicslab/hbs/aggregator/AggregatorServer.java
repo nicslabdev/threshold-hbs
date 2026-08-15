@@ -1,7 +1,6 @@
 package es.uma.nicslab.hbs.aggregator;
 
 import es.uma.nicslab.hbs.metrics.AggregatorSigningMetrics;
-import es.uma.nicslab.hbs.metrics.AsyncJsonlMetricsWriter;
 import es.uma.nicslab.hbs.cas.CASClient;
 import es.uma.nicslab.hbs.cas.HttpCASReader;
 import es.uma.nicslab.hbs.lms.LMSPublicKeyParameters;
@@ -43,7 +42,6 @@ import java.util.logging.Logger;
 public class AggregatorServer {
 
     private static final Logger log = Logger.getLogger(AggregatorServer.class.getName());
-    private static final AsyncJsonlMetricsWriter metricsWriter = AsyncJsonlMetricsWriter.fromEnvironment("KLL_METRICS_FILE");
     private static final int DEFAULT_PORT = 8081;
     private static final String DEFAULT_CAS_URL = "http://cas:8080";
 
@@ -202,97 +200,45 @@ public class AggregatorServer {
         AggregatorSigningMetrics metrics
     ) {
 
-        if (!metricsWriter.isEnabled()) {
+        if (!AggregatorMetricsSink.isEnabled()) {
             return;
         }
 
         StringBuilder json = new StringBuilder(512);
 
         json.append('{');
-
         json.append("\"event\":\"aggregator_sign\"");
         json.append(",\"timestamp_ms\":").append(System.currentTimeMillis());
-
         json.append(",\"key_id\":").append(keyID);
-
         json.append(",\"http_status\":").append(httpStatus);
-
         json.append(",\"request_bytes\":").append(requestBytes);
-
         json.append(",\"response_bytes\":").append(responseBytes);
-
         json.append(",\"server_processing_ns\":").append(serverProcessingNs);
-
         json.append(",\"serialization_ns\":").append(serializationNs);
 
         if (metrics != null) {
             json.append(",\"status\":\"").append(metrics.status()).append('"');
-
             json.append(",\"coalition_size\":").append(metrics.coalitionSize());
-
-            appendIntArray(
-                    json,
-                    "trustee_indices",
-                    metrics.trusteeIndices()
-            );
-
+            appendIntArray(json,"trustee_indices",metrics.trusteeIndices());
             json.append(",\"aggregator_total_ns\":").append(metrics.totalNs());
-
             json.append(",\"cl_ns\":").append(metrics.clNs());
-
             json.append(",\"crv_ns\":").append(metrics.crvNs());
-
             json.append(",\"round1_ns\":").append(metrics.round1Ns());
-
-            appendLongArray(
-                    json,
-                    "round1_rpc_ns",
-                    metrics.round1RpcNs()
-            );
-
-            appendLongArray(
-                    json,
-                    "round1_start_offset_ns",
-                    metrics.round1StartOffsetNs()
-            );
-
-            appendLongArray(
-                    json,
-                    "round1_end_offset_ns",
-                    metrics.round1EndOffsetNs()
-            );
-
+            appendLongArray(json,"round1_rpc_ns",metrics.round1RpcNs());
+            appendLongArray(json,"round1_start_offset_ns",metrics.round1StartOffsetNs());
+            appendLongArray(json,"round1_end_offset_ns",metrics.round1EndOffsetNs());
             json.append(",\"between_rounds_ns\":").append(metrics.betweenRoundsNs());
-
             json.append(",\"round2_ns\":").append(metrics.round2Ns());
-
-            appendLongArray(
-                    json,
-                    "round2_rpc_ns",
-                    metrics.round2RpcNs()
-            );
-
-            appendLongArray(
-                    json,
-                    "round2_start_offset_ns",
-                    metrics.round2StartOffsetNs()
-            );
-
-            appendLongArray(
-                    json,
-                    "round2_end_offset_ns",
-                    metrics.round2EndOffsetNs()
-            );
-
+            appendLongArray(json,"round2_rpc_ns",metrics.round2RpcNs());
+            appendLongArray(json,"round2_start_offset_ns",metrics.round2StartOffsetNs());
+            appendLongArray(json,"round2_end_offset_ns",metrics.round2EndOffsetNs());
             json.append(",\"reconstruction_ns\":").append(metrics.reconstructionNs());
-
         } else {
             json.append(",\"status\":\"no_metrics\"");
         }
 
         json.append('}');
-
-        metricsWriter.emit(json.toString());
+        AggregatorMetricsSink.emit(json.toString());
     }
 
     public static void main(String[] args) throws Exception {
