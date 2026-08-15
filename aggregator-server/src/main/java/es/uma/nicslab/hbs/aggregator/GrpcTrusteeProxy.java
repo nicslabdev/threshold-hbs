@@ -64,6 +64,7 @@ public class GrpcTrusteeProxy implements TrusteeProxy {
 
         try {
             Sign1Response response = stub.shardSign1(request);
+            responseProtoBytes = response.getSerializedSize();
 
             if (response.getAbort()) {
                 status = "abort";
