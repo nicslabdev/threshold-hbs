@@ -44,3 +44,7 @@ cas-test/
 # Network evaluation generated data
 /neteval/results/
 /neteval-metrics/
+
+### Python ###
+__pycache__/
+*.py[cod]

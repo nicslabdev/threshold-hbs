@@ -17,6 +17,10 @@ COMPOSE_FILES=(
 
 RESULT_DIR=""
 EXPERIMENT_ID=""
+WORKLOAD_FILE=""
+MESSAGE_SHA256=""
+MESSAGE_BYTES=""
+KEY_LIMIT=""
 
 die() {
     echo "ERROR: $*" >&2
@@ -39,6 +43,76 @@ make_experiment_id() {
 compose() {
     KLL_METRICS_DIR="${RESULT_DIR}/raw" \
         docker compose "${COMPOSE_FILES[@]}" "$@"
+}
+
+create_experiment() {
+    EXPERIMENT_ID="${1:-$(make_experiment_id)}"
+
+    [[ "$EXPERIMENT_ID" =~ ^[A-Za-z0-9._-]+$ ]] ||
+        die "Invalid experiment ID: $EXPERIMENT_ID"
+
+    RESULT_DIR="${RESULTS_ROOT}/${EXPERIMENT_ID}"
+
+    [[ ! -e "$RESULT_DIR" ]] ||
+        die "Experiment directory already exists: $RESULT_DIR"
+
+    mkdir -p \
+        "$RESULT_DIR/raw" \
+        "$RESULT_DIR/signatures" \
+        "$RESULT_DIR/network" \
+        "$RESULT_DIR/setup" \
+        "$RESULT_DIR/workload" \
+        "$RESULT_DIR/logs"
+
+    touch \
+        "$RESULT_DIR/keyids.jsonl" \
+        "$RESULT_DIR/samples.jsonl"
+
+    local git_commit
+    local git_branch
+    local git_dirty
+
+    git_commit="$(git rev-parse HEAD)"
+    git_branch="$(git branch --show-current)"
+
+    if [[ -n "$(git status --porcelain)" ]]; then
+        git_dirty=true
+    else
+        git_dirty=false
+    fi
+
+    python3 - \
+        "$RESULT_DIR/manifest.json" \
+        "$EXPERIMENT_ID" \
+        "$(utc_now)" \
+        "$git_commit" \
+        "$git_branch" \
+        "$git_dirty" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+
+manifest = {
+    "schema_version": 1,
+    "experiment": {
+        "experiment_id": sys.argv[2],
+        "started_at": sys.argv[3],
+        "finished_at": None,
+        "status": "created",
+    },
+    "git": {
+        "commit": sys.argv[4],
+        "branch": sys.argv[5],
+        "dirty": sys.argv[6].lower() == "true",
+    },
+}
+
+with manifest_path.open("x", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2, sort_keys=True)
+    f.write("\n")
+PY
 }
 
 configure_openssl() {
@@ -92,72 +166,75 @@ openssl_lms() {
         "$OPENSSL_BIN" "$@"
 }
 
-create_experiment() {
-    EXPERIMENT_ID="${1:-$(make_experiment_id)}"
+prepare_workload() {
+    echo
+    echo "==> Preparing deterministic workload"
 
-    [[ "$EXPERIMENT_ID" =~ ^[A-Za-z0-9._-]+$ ]] ||
-        die "Invalid experiment ID: $EXPERIMENT_ID"
-
-    RESULT_DIR="${RESULTS_ROOT}/${EXPERIMENT_ID}"
-
-    [[ ! -e "$RESULT_DIR" ]] ||
-        die "Experiment directory already exists: $RESULT_DIR"
-
-    mkdir -p \
-        "$RESULT_DIR/raw" \
-        "$RESULT_DIR/signatures" \
-        "$RESULT_DIR/network" \
-        "$RESULT_DIR/setup" \
-        "$RESULT_DIR/workload" \
-        "$RESULT_DIR/logs"
-
-    touch "$RESULT_DIR/keyids.jsonl"
-
-    local git_commit
-    local git_branch
-    local git_dirty
-
-    git_commit="$(git rev-parse HEAD)"
-    git_branch="$(git branch --show-current)"
-
-    if [[ -n "$(git status --porcelain)" ]]; then
-        git_dirty=true
-    else
-        git_dirty=false
-    fi
+    WORKLOAD_FILE="$RESULT_DIR/workload/message.bin"
 
     python3 - \
-        "$RESULT_DIR/manifest.json" \
-        "$EXPERIMENT_ID" \
-        "$(utc_now)" \
-        "$git_commit" \
-        "$git_branch" \
-        "$git_dirty" <<'PY'
+        "$WORKLOAD_FILE" \
+        "$RESULT_DIR/manifest.json" <<'PY'
+import hashlib
 import json
 import sys
 from pathlib import Path
 
-manifest_path = Path(sys.argv[1])
+message_path = Path(sys.argv[1])
+manifest_path = Path(sys.argv[2])
 
-manifest = {
-    "schema_version": 1,
-    "experiment": {
-        "experiment_id": sys.argv[2],
-        "started_at": sys.argv[3],
-        "finished_at": None,
-        "status": "created",
-    },
-    "git": {
-        "commit": sys.argv[4],
-        "branch": sys.argv[5],
-        "dirty": sys.argv[6].lower() == "true",
-    },
+# Deterministic 1 KiB message:
+# bytes 0x00..0xff repeated four times.
+message = bytes(range(256)) * 4
+
+assert len(message) == 1024
+
+message_path.write_bytes(message)
+
+sha256 = hashlib.sha256(message).hexdigest()
+
+manifest = json.loads(
+    manifest_path.read_text(encoding="utf-8")
+)
+
+manifest["workload"] = {
+    "message_file": "workload/message.bin",
+    "message_bytes": len(message),
+    "message_sha256": sha256,
 }
 
-with manifest_path.open("x", encoding="utf-8") as f:
-    json.dump(manifest, f, indent=2, sort_keys=True)
-    f.write("\n")
+manifest_path.write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+
+print(len(message))
+print(sha256)
 PY
+
+    local workload_info
+
+    workload_info="$(
+        python3 - "$WORKLOAD_FILE" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+data = Path(sys.argv[1]).read_bytes()
+
+print(len(data))
+print(hashlib.sha256(data).hexdigest())
+PY
+    )"
+
+    MESSAGE_BYTES="$(printf '%s\n' "$workload_info" | sed -n '1p')"
+    MESSAGE_SHA256="$(printf '%s\n' "$workload_info" | sed -n '2p')"
+
+    [[ "$MESSAGE_BYTES" == "1024" ]] ||
+        die "Unexpected workload size: $MESSAGE_BYTES"
+
+    echo "    bytes:  $MESSAGE_BYTES"
+    echo "    sha256: $MESSAGE_SHA256"
 }
 
 fresh_deployment() {
@@ -251,6 +328,174 @@ archive_setup_input() {
     cp \
         "$REPO_ROOT/setup-config.json" \
         "$RESULT_DIR/setup/setup-config.json"
+}
+
+load_key_space() {
+    KEY_LIMIT="$(
+        python3 - \
+            "$RESULT_DIR/setup/setup-config.json" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    config = json.load(f)
+
+name = config["lmsParams"]
+
+match = re.search(r"_h(\d+)$", name)
+
+if match is None:
+    raise SystemExit(
+        f"Cannot derive LMS tree height from {name!r}"
+    )
+
+h = int(match.group(1))
+D = 1 << h
+
+print(D)
+PY
+    )"
+
+    [[ "$KEY_LIMIT" =~ ^[0-9]+$ ]] ||
+        die "Invalid derived KeyID limit: $KEY_LIMIT"
+
+    (( KEY_LIMIT > 0 )) ||
+        die "Invalid KeyID limit: $KEY_LIMIT"
+
+    echo "    KeyID space: 0..$((KEY_LIMIT - 1))"
+}
+
+append_sample_record() {
+    local run_id="$1"
+    local profile_id="$2"
+    local sample_type="$3"
+    local key_id="$4"
+    local started_at="$5"
+    local finished_at="$6"
+    local curl_rc="$7"
+    local http_status="$8"
+    local curl_time_total_s="$9"
+    local response_bytes="${10}"
+    local response_file="${11}"
+    local http_success="${12}"
+    local verification_status="${13}"
+    local verification_rc="${14}"
+    local verification_log="${15}"
+    local signature_sha256="${16}"
+    local valid="${17}"
+
+    python3 - \
+        "$RESULT_DIR/samples.jsonl" \
+        "$EXPERIMENT_ID" \
+        "$run_id" \
+        "$profile_id" \
+        "$sample_type" \
+        "$key_id" \
+        "$MESSAGE_SHA256" \
+        "$MESSAGE_BYTES" \
+        "$started_at" \
+        "$finished_at" \
+        "$curl_rc" \
+        "$http_status" \
+        "$curl_time_total_s" \
+        "$response_bytes" \
+        "$response_file" \
+        "$http_success" \
+        "$verification_status" \
+        "$verification_rc" \
+        "$verification_log" \
+        "$signature_sha256" \
+        "$valid" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+(
+    output,
+    experiment_id,
+    run_id,
+    profile_id,
+    sample_type,
+    key_id,
+    message_sha256,
+    message_bytes,
+    started_at,
+    finished_at,
+    curl_rc,
+    http_status,
+    curl_time_total_s,
+    response_bytes,
+    response_file,
+    http_success,
+    verification_status,
+    verification_rc,
+    verification_log,
+    signature_sha256,
+    valid,
+) = sys.argv[1:]
+
+record = {
+    "schema_version": 1,
+    "experiment_id": experiment_id,
+    "run_id": run_id,
+    "profile_id": profile_id,
+    "sample_type": sample_type,
+    "key_id": int(key_id),
+    "message_sha256": message_sha256,
+    "message_bytes": int(message_bytes),
+    "attempt_started_at": started_at,
+    "attempt_finished_at": finished_at,
+    "curl_exit_code": int(curl_rc),
+    "http_status": (
+        int(http_status)
+        if http_status and http_status.isdigit()
+        else None
+    ),
+    "http_success": http_success.lower() == "true",
+    "curl_time_total_s": (
+        float(curl_time_total_s)
+        if curl_time_total_s
+        else None
+    ),
+    "response_bytes": int(response_bytes),
+    "response_file": response_file or None,
+    "verification_status": verification_status,
+    "verification_exit_code": (
+        int(verification_rc)
+        if verification_rc
+        else None
+    ),
+    "verification_log": verification_log or None,
+    "signature_sha256": signature_sha256 or None,
+    "valid": valid.lower() == "true",
+}
+
+line = (
+    json.dumps(
+        record,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    + "\n"
+).encode("utf-8")
+
+path = Path(output)
+path.parent.mkdir(parents=True, exist_ok=True)
+
+fd = os.open(
+    path,
+    os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+    0o644,
+)
+
+try:
+    os.write(fd, line)
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
 }
 
 run_dealer() {
@@ -467,14 +712,196 @@ verify_zero_keyids() {
         die "KeyID ledger is not empty before signing phase"
 }
 
+sign_once() {
+    local sample_type="$1"
+    local profile_id="$2"
+    local run_id="$3"
+
+    echo
+    echo "==> Signing: $run_id"
+    echo "    type:    $sample_type"
+    echo "    profile: $profile_id"
+
+    local key_id
+
+    key_id="$(
+        "$REPO_ROOT/neteval/runner/keyid.py" \
+            --ledger "$RESULT_DIR/keyids.jsonl" \
+            --limit "$KEY_LIMIT" \
+            --sample-type "$sample_type" \
+            --run-id "$run_id" \
+            --profile-id "$profile_id"
+    )"
+
+    echo "    KeyID:   $key_id"
+
+    # From this exact point onward the KeyID is permanently burned.
+
+    local key_label
+    printf -v key_label '%07d' "$key_id"
+
+    local temp_response
+    local signature_file
+    local error_file
+    local curl_log
+    local verification_log
+
+    temp_response="$RESULT_DIR/signatures/.key-${key_label}.response.tmp"
+    signature_file="$RESULT_DIR/signatures/key-${key_label}.sig"
+    error_file="$RESULT_DIR/signatures/key-${key_label}.error"
+
+    curl_log="$RESULT_DIR/logs/curl-key-${key_label}.log"
+    verification_log="$RESULT_DIR/logs/verify-key-${key_label}.log"
+
+    rm -f \
+        "$temp_response" \
+        "$signature_file" \
+        "$error_file"
+
+    local started_at
+    local finished_at
+
+    started_at="$(
+        date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"
+    )"
+
+    local curl_stats=""
+    local curl_rc=0
+
+    if curl_stats="$(
+        curl \
+            -sS \
+            --max-time 30 \
+            -X POST \
+            --data-binary @"$WORKLOAD_FILE" \
+            -o "$temp_response" \
+            -w $'%{http_code}\t%{time_total}\t%{size_download}' \
+            "http://localhost:8081/sign/${key_id}" \
+            2>"$curl_log"
+    )"; then
+        curl_rc=0
+    else
+        curl_rc=$?
+    fi
+
+    finished_at="$(
+        date -u +"%Y-%m-%dT%H:%M:%S.%3NZ"
+    )"
+
+    local http_status=""
+    local curl_time_total_s=""
+    local curl_reported_bytes="0"
+
+    IFS=$'\t' read -r \
+        http_status \
+        curl_time_total_s \
+        curl_reported_bytes \
+        <<< "$curl_stats"
+
+    [[ "$curl_reported_bytes" =~ ^[0-9]+$ ]] ||
+        curl_reported_bytes=0
+
+    local http_success=false
+    local response_file=""
+    local response_bytes=0
+
+    local verification_status="not_run"
+    local verification_rc=""
+    local signature_sha256=""
+    local valid=false
+
+    if [[ "$curl_rc" -eq 0 && "$http_status" == "200" ]]; then
+
+        [[ -f "$temp_response" ]] ||
+            die "HTTP 200 but response file is missing for KeyID=$key_id"
+
+        mv "$temp_response" "$signature_file"
+
+        response_file="signatures/$(basename "$signature_file")"
+        response_bytes="$(stat -c '%s' "$signature_file")"
+        http_success=true
+
+        if [[ "$response_bytes" -ne "$curl_reported_bytes" ]]; then
+            die \
+                "Response size mismatch for KeyID=$key_id: " \
+                "curl=$curl_reported_bytes file=$response_bytes"
+        fi
+
+        local sha_line
+        sha_line="$(sha256sum "$signature_file")"
+        signature_sha256="${sha_line%% *}"
+
+        if openssl_lms pkeyutl \
+            -verify \
+            -in "$WORKLOAD_FILE" \
+            -sigfile "$signature_file" \
+            -inkey "$RESULT_DIR/setup/lmspublickey.pem" \
+            -pubin \
+            >"$verification_log" 2>&1
+        then
+            verification_rc=0
+            verification_status="success"
+            valid=true
+        else
+            verification_rc=$?
+            verification_status="failure"
+            valid=false
+        fi
+
+    else
+
+        if [[ -f "$temp_response" ]]; then
+            mv "$temp_response" "$error_file"
+            response_file="signatures/$(basename "$error_file")"
+            response_bytes="$(stat -c '%s' "$error_file")"
+        fi
+    fi
+
+    append_sample_record \
+        "$run_id" \
+        "$profile_id" \
+        "$sample_type" \
+        "$key_id" \
+        "$started_at" \
+        "$finished_at" \
+        "$curl_rc" \
+        "$http_status" \
+        "$curl_time_total_s" \
+        "$response_bytes" \
+        "$response_file" \
+        "$http_success" \
+        "$verification_status" \
+        "$verification_rc" \
+        "$(
+            if [[ -f "$verification_log" ]]; then
+                printf 'logs/%s' "$(basename "$verification_log")"
+            fi
+        )" \
+        "$signature_sha256" \
+        "$valid"
+
+    echo "    curl rc:       $curl_rc"
+    echo "    HTTP:          ${http_status:-none}"
+    echo "    HTTP success:  $http_success"
+    echo "    bytes:         $response_bytes"
+    echo "    verification:  $verification_status"
+    echo "    valid:         $valid"
+
+    if [[ "$valid" != "true" ]]; then
+        echo "ERROR: signing attempt $run_id was not cryptographically valid" >&2
+        return 1
+    fi
+
+    return 0
+}
+
 print_summary() {
     echo
-    echo "Experiment deployment ready:"
+    echo "Experiment test complete:"
     echo "  id:      $EXPERIMENT_ID"
     echo "  results: $RESULT_DIR"
-    echo "  status:  ready_for_signing"
     echo
-    echo "Reserved KeyIDs: 0"
+    echo "One verified warm-up signature completed."
     echo "Deployment intentionally left running."
 }
 
@@ -501,6 +928,7 @@ main() {
 
     create_experiment "${1:-}"
     configure_openssl
+    prepare_workload
 
     fresh_deployment
     build_artifacts
@@ -508,6 +936,7 @@ main() {
     start_base_services
 
     archive_setup_input
+    load_key_space
     run_dealer
     archive_bulletin_board
     export_public_key_pem
@@ -517,6 +946,12 @@ main() {
 
     verify_zero_keyids
     finalize_setup_manifest
+
+    sign_once \
+        warmup \
+        baseline \
+        warmup-001 ||
+        die "Automated warm-up failed"
 
     print_summary
 }

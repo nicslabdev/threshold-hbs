@@ -61,10 +61,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_reserved_ids(file_obj) -> set[int]:
+def load_reservations(file_obj) -> tuple[set[int], set[str]]:
     file_obj.seek(0)
 
-    reserved: set[int] = set()
+    reserved_ids: set[int] = set()
+    reserved_run_ids: set[str] = set()
 
     for line_number, line in enumerate(file_obj, start=1):
         line = line.strip()
@@ -91,15 +92,30 @@ def load_reserved_ids(file_obj) -> set[int]:
         if key_id < 0:
             die(f"Negative key_id in ledger at line {line_number}")
 
-        if key_id in reserved:
+        if key_id in reserved_ids:
             die(
                 f"Duplicate key_id={key_id} already present in ledger "
                 f"(line {line_number})"
             )
 
-        reserved.add(key_id)
+        run_id = record.get("run_id")
 
-    return reserved
+        if not isinstance(run_id, str) or not run_id:
+            die(
+                f"Missing or invalid run_id in ledger "
+                f"at line {line_number}"
+            )
+
+        if run_id in reserved_run_ids:
+            die(
+                f"Duplicate run_id={run_id!r} already present in ledger "
+                f"(line {line_number})"
+            )
+
+        reserved_ids.add(key_id)
+        reserved_run_ids.add(run_id)
+
+    return reserved_ids, reserved_run_ids
 
 
 def reserve(args: argparse.Namespace) -> int:
@@ -115,10 +131,13 @@ def reserve(args: argparse.Namespace) -> int:
         # Prevent two runner processes from allocating the same KeyID.
         fcntl.flock(file_obj.fileno(), fcntl.LOCK_EX)
 
-        reserved = load_reserved_ids(file_obj)
+        reserved_ids, reserved_run_ids = load_reservations(file_obj)
 
-        if reserved:
-            next_key_id = max(reserved) + 1
+        if args.run_id in reserved_run_ids:
+            die(f"run_id already reserved: {args.run_id}")
+
+        if reserved_ids:
+            next_key_id = max(reserved_ids) + 1
         else:
             next_key_id = 0
 
