@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 RESULTS_ROOT="${REPO_ROOT}/neteval/results"
 KLL_OPENSSL_PREFIX="${KLL_OPENSSL_PREFIX:-}"
+NETEM_SCRIPT="${REPO_ROOT}/neteval/netem/netem.sh"
 
 OPENSSL_BIN=""
 OPENSSL_LD_LIBRARY_PATH=""
@@ -639,6 +640,11 @@ archive_deployment_snapshot() {
         > "$RESULT_DIR/setup/container-ids.txt"
 }
 
+verify_zero_keyids() {
+    [[ ! -s "$RESULT_DIR/keyids.jsonl" ]] ||
+        die "KeyID ledger is not empty before signing phase"
+}
+
 finalize_setup_manifest() {
     python3 - \
         "$RESULT_DIR/manifest.json" \
@@ -707,9 +713,244 @@ manifest_path.write_text(
 PY
 }
 
-verify_zero_keyids() {
-    [[ ! -s "$RESULT_DIR/keyids.jsonl" ]] ||
-        die "KeyID ledger is not empty before signing phase"
+configure_baseline_profile() {
+    echo
+    echo "==> Configuring network profile: baseline"
+
+    [[ -x "$NETEM_SCRIPT" ]] ||
+        die "netem helper is not executable: $NETEM_SCRIPT"
+
+    mkdir -p "$RESULT_DIR/network/baseline"
+
+    # Authenticate only for the operations that need CAP_NET_ADMIN/root.
+    sudo -v
+
+    sudo "$NETEM_SCRIPT" reset \
+        > "$RESULT_DIR/network/baseline/reset.txt" 2>&1
+
+    sudo "$NETEM_SCRIPT" show \
+        > "$RESULT_DIR/network/baseline/qdisc-before.txt" 2>&1
+
+    echo "    baseline qdisc state archived"
+}
+
+capture_baseline_rtt() {
+    echo
+    echo "==> Capturing baseline RTT"
+
+    local output="$RESULT_DIR/network/baseline/rtt.txt"
+
+    local agg_cid
+    local agg_pid
+
+    agg_cid="$(compose ps -q aggregator)"
+
+    [[ -n "$agg_cid" ]] ||
+        die "Aggregator container not found"
+
+    agg_pid="$(
+        docker inspect \
+            -f '{{.State.Pid}}' \
+            "$agg_cid"
+    )"
+
+    [[ "$agg_pid" =~ ^[0-9]+$ ]] ||
+        die "Invalid Aggregator PID: $agg_pid"
+
+    : > "$output"
+
+    local service
+    local cid
+    local ip
+
+    for service in trustee-0 trustee-1 trustee-2; do
+        cid="$(compose ps -q "$service")"
+
+        [[ -n "$cid" ]] ||
+            die "Container not found for $service"
+
+        ip="$(
+            docker inspect \
+                -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+                "$cid"
+        )"
+
+        [[ -n "$ip" ]] ||
+            die "Could not determine IP for $service"
+
+        {
+            echo "=== $service ($ip) ==="
+
+            sudo nsenter \
+                -t "$agg_pid" \
+                -n \
+                ping \
+                -c 10 \
+                -W 2 \
+                "$ip"
+
+            echo
+        } >> "$output"
+    done
+
+    echo "    RTT snapshot archived"
+}
+
+run_baseline_samples() {
+    echo
+    echo "==> Running ER-1 baseline samples"
+
+    sign_once \
+        warmup \
+        baseline \
+        warmup-001 ||
+        die "warmup-001 failed"
+
+    sign_once \
+        warmup \
+        baseline \
+        warmup-002 ||
+        die "warmup-002 failed"
+
+    sign_once \
+        conditioning \
+        baseline \
+        conditioning-001 ||
+        die "conditioning-001 failed"
+
+    sign_once \
+        measured \
+        baseline \
+        measured-001 ||
+        die "measured-001 failed"
+
+    sign_once \
+        measured \
+        baseline \
+        measured-002 ||
+        die "measured-002 failed"
+
+    sign_once \
+        measured \
+        baseline \
+        measured-003 ||
+        die "measured-003 failed"
+}
+
+capture_final_network_state() {
+    echo
+    echo "==> Capturing final baseline network state"
+
+    sudo "$NETEM_SCRIPT" show \
+        > "$RESULT_DIR/network/baseline/qdisc-after.txt" 2>&1
+}
+
+validate_er1_results() {
+    echo
+    echo "==> Validating ER-1 result set"
+
+    python3 - \
+        "$RESULT_DIR/keyids.jsonl" \
+        "$RESULT_DIR/samples.jsonl" <<'PY'
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+
+ledger_path = Path(sys.argv[1])
+samples_path = Path(sys.argv[2])
+
+ledger = [
+    json.loads(line)
+    for line in ledger_path.read_text(encoding="utf-8").splitlines()
+    if line.strip()
+]
+
+samples = [
+    json.loads(line)
+    for line in samples_path.read_text(encoding="utf-8").splitlines()
+    if line.strip()
+]
+
+if len(ledger) != 6:
+    raise SystemExit(
+        f"Expected 6 KeyID reservations, found {len(ledger)}"
+    )
+
+if len(samples) != 6:
+    raise SystemExit(
+        f"Expected 6 sample records, found {len(samples)}"
+    )
+
+key_ids = [r["key_id"] for r in ledger]
+
+if key_ids != [0, 1, 2, 3, 4, 5]:
+    raise SystemExit(
+        f"Unexpected KeyID sequence: {key_ids}"
+    )
+
+if len(set(key_ids)) != 6:
+    raise SystemExit("Duplicate KeyID detected")
+
+ledger_run_ids = {r["run_id"] for r in ledger}
+sample_run_ids = {r["run_id"] for r in samples}
+
+if ledger_run_ids != sample_run_ids:
+    raise SystemExit(
+        "Ledger/sample run_id sets do not match"
+    )
+
+counts = Counter(r["sample_type"] for r in samples)
+
+expected = {
+    "warmup": 2,
+    "conditioning": 1,
+    "measured": 3,
+}
+
+if dict(counts) != expected:
+    raise SystemExit(
+        f"Unexpected sample counts: {dict(counts)}"
+    )
+
+for sample in samples:
+    if sample["profile_id"] != "baseline":
+        raise SystemExit(
+            f"Unexpected profile for {sample['run_id']}"
+        )
+
+    if sample["http_status"] != 200:
+        raise SystemExit(
+            f"HTTP failure in {sample['run_id']}"
+        )
+
+    if not sample["http_success"]:
+        raise SystemExit(
+            f"HTTP success=false in {sample['run_id']}"
+        )
+
+    if sample["verification_status"] != "success":
+        raise SystemExit(
+            f"Verification failure in {sample['run_id']}"
+        )
+
+    if sample["verification_exit_code"] != 0:
+        raise SystemExit(
+            f"Non-zero verification rc in {sample['run_id']}"
+        )
+
+    if not sample["valid"]:
+        raise SystemExit(
+            f"Invalid signature in {sample['run_id']}"
+        )
+
+print("ER-1 validation successful")
+print("  reservations: 6")
+print("  warmup:        2")
+print("  conditioning:  1")
+print("  measured:      3")
+print("  valid:         6/6")
+PY
 }
 
 sign_once() {
@@ -895,14 +1136,69 @@ sign_once() {
     return 0
 }
 
+shutdown_deployment() {
+    echo
+    echo "==> Resetting network emulation"
+
+    sudo "$NETEM_SCRIPT" reset \
+        > "$RESULT_DIR/network/baseline/reset-after.txt" 2>&1 || true
+
+    echo
+    echo "==> Stopping deployment"
+
+    compose --profile setup \
+        down -v --remove-orphans
+}
+
+finalize_experiment_manifest() {
+    echo
+    echo "==> Finalizing experiment manifest"
+
+    python3 - \
+        "$RESULT_DIR/manifest.json" \
+        "$(utc_now)" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+finished_at = sys.argv[2]
+
+manifest = json.loads(
+    manifest_path.read_text(encoding="utf-8")
+)
+
+manifest["experiment"]["finished_at"] = finished_at
+manifest["experiment"]["status"] = "completed"
+
+manifest["execution"] = {
+    "profile": "baseline",
+    "warmup_samples": 2,
+    "conditioning_samples": 1,
+    "measured_samples": 3,
+    "total_signing_attempts": 6,
+    "concurrency": 1,
+}
+
+manifest["deployment"]["status"] = "completed"
+
+manifest_path.write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
 print_summary() {
     echo
-    echo "Experiment test complete:"
-    echo "  id:      $EXPERIMENT_ID"
-    echo "  results: $RESULT_DIR"
-    echo
-    echo "One verified warm-up signature completed."
-    echo "Deployment intentionally left running."
+    echo "ER-1 baseline experiment complete:"
+    echo "  id:           $EXPERIMENT_ID"
+    echo "  results:      $RESULT_DIR"
+    echo "  warmups:      2"
+    echo "  conditioning: 1"
+    echo "  measured:     3"
+    echo "  verified:     6/6"
+    echo "  status:       completed"
 }
 
 main() {
@@ -916,7 +1212,10 @@ main() {
         curl \
         tee \
         cmp \
-        sha256sum
+        sha256sum \
+        sudo \
+        nsenter \
+        ping
     do
         require_command "$cmd"
     done
@@ -947,11 +1246,16 @@ main() {
     verify_zero_keyids
     finalize_setup_manifest
 
-    sign_once \
-        warmup \
-        baseline \
-        warmup-001 ||
-        die "Automated warm-up failed"
+    configure_baseline_profile
+    capture_baseline_rtt
+
+    run_baseline_samples
+
+    capture_final_network_state
+    validate_er1_results
+
+    shutdown_deployment
+    finalize_experiment_manifest
 
     print_summary
 }
