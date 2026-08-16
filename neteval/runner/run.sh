@@ -832,7 +832,6 @@ configure_network_profile() {
 capture_profile_rtt() {
     local profile_id="$1"
     local target_rtt_ms="$2"
-    local validate="$3"
 
     echo
     echo "==> Capturing RTT for profile: $profile_id"
@@ -887,10 +886,10 @@ capture_profile_rtt() {
                 -t "$agg_pid" \
                 -n \
                 ping \
-                    -c 10 \
-                    -i 0.2 \
-                    -W 2 \
-                    "$ip"
+                -c 10 \
+                -i 0.2 \
+                -W 2 \
+                "$ip"
 
             echo
         } >> "$output"
