@@ -4,22 +4,22 @@ services:
     environment:
       KLL_METRICS_FILE: "/metrics/aggregator.jsonl"
     volumes:
-      - ./neteval-metrics:/metrics
+      - "${KLL_METRICS_DIR:-./neteval-metrics}:/metrics"
 
   trustee-0:
     environment:
       KLL_METRICS_FILE: "/metrics/trustee-0.jsonl"
     volumes:
-      - ./neteval-metrics:/metrics
+      - "${KLL_METRICS_DIR:-./neteval-metrics}:/metrics"
 
   trustee-1:
     environment:
       KLL_METRICS_FILE: "/metrics/trustee-1.jsonl"
     volumes:
-      - ./neteval-metrics:/metrics
+      - "${KLL_METRICS_DIR:-./neteval-metrics}:/metrics"
 
   trustee-2:
     environment:
       KLL_METRICS_FILE: "/metrics/trustee-2.jsonl"
     volumes:
-      - ./neteval-metrics:/metrics
+      - "${KLL_METRICS_DIR:-./neteval-metrics}:/metrics"
