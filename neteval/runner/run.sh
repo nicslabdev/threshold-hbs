@@ -6,6 +6,14 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 RESULTS_ROOT="${REPO_ROOT}/neteval/results"
 
+COMPOSE_FILES=(
+    -f "${REPO_ROOT}/docker-compose.yml"
+    -f "${REPO_ROOT}/docker-compose.metrics.yml"
+)
+
+RESULT_DIR=""
+EXPERIMENT_ID=""
+
 die() {
     echo "ERROR: $*" >&2
     exit 1
@@ -24,33 +32,31 @@ make_experiment_id() {
     date -u +"%Y%m%dT%H%M%SZ"
 }
 
-main() {
-    require_command git
-    require_command python3
-    require_command date
+compose() {
+    KLL_METRICS_DIR="${RESULT_DIR}/raw" \
+        docker compose "${COMPOSE_FILES[@]}" "$@"
+}
 
-    cd "$REPO_ROOT"
+create_experiment() {
+    EXPERIMENT_ID="${1:-$(make_experiment_id)}"
 
-    local experiment_id
-    experiment_id="${1:-$(make_experiment_id)}"
+    [[ "$EXPERIMENT_ID" =~ ^[A-Za-z0-9._-]+$ ]] ||
+        die "Invalid experiment ID: $EXPERIMENT_ID"
 
-    [[ "$experiment_id" =~ ^[A-Za-z0-9._-]+$ ]] ||
-        die "Invalid experiment ID: $experiment_id"
+    RESULT_DIR="${RESULTS_ROOT}/${EXPERIMENT_ID}"
 
-    local result_dir="${RESULTS_ROOT}/${experiment_id}"
-
-    [[ ! -e "$result_dir" ]] ||
-        die "Experiment directory already exists: $result_dir"
+    [[ ! -e "$RESULT_DIR" ]] ||
+        die "Experiment directory already exists: $RESULT_DIR"
 
     mkdir -p \
-        "$result_dir/raw" \
-        "$result_dir/signatures" \
-        "$result_dir/network" \
-        "$result_dir/setup" \
-        "$result_dir/workload" \
-        "$result_dir/logs"
+        "$RESULT_DIR/raw" \
+        "$RESULT_DIR/signatures" \
+        "$RESULT_DIR/network" \
+        "$RESULT_DIR/setup" \
+        "$RESULT_DIR/workload" \
+        "$RESULT_DIR/logs"
 
-    touch "$result_dir/keyids.jsonl"
+    touch "$RESULT_DIR/keyids.jsonl"
 
     local git_commit
     local git_branch
@@ -66,8 +72,8 @@ main() {
     fi
 
     python3 - \
-        "$result_dir/manifest.json" \
-        "$experiment_id" \
+        "$RESULT_DIR/manifest.json" \
+        "$EXPERIMENT_ID" \
         "$(utc_now)" \
         "$git_commit" \
         "$git_branch" \
@@ -97,12 +103,294 @@ with manifest_path.open("x", encoding="utf-8") as f:
     json.dump(manifest, f, indent=2, sort_keys=True)
     f.write("\n")
 PY
+}
 
-    echo "Experiment created:"
-    echo "  id:      $experiment_id"
-    echo "  results: $result_dir"
+fresh_deployment() {
     echo
-    echo "No deployment or signing actions were executed."
+    echo "==> Removing previous Docker deployment and volumes"
+
+    compose --profile setup \
+        down -v --remove-orphans
+}
+
+build_artifacts() {
+    echo
+    echo "==> Building Java artifacts"
+
+    mvn clean package -DskipTests \
+        2>&1 | tee "$RESULT_DIR/logs/maven-build.log"
+
+    echo
+    echo "==> Building Docker images"
+
+    compose --profile setup \
+        build \
+        cas \
+        trustee-0 \
+        trustee-1 \
+        trustee-2 \
+        dealer \
+        aggregator \
+        2>&1 | tee "$RESULT_DIR/logs/docker-build.log"
+}
+
+wait_for_trustee() {
+    local service="$1"
+    local index="$2"
+    local marker="Trustee ${index} escuchando en puerto 9090"
+    local timeout_seconds=30
+    local deadline=$((SECONDS + timeout_seconds))
+
+    while (( SECONDS < deadline )); do
+        if compose logs \
+            --no-color \
+            --tail=100 \
+            "$service" 2>&1 |
+            grep -Fq "$marker"; then
+
+            local cid
+            cid="$(compose ps -q "$service")"
+
+            [[ -n "$cid" ]] ||
+                die "$service emitted readiness marker but has no container"
+
+            [[ "$(docker inspect -f '{{.State.Running}}' "$cid")" == "true" ]] ||
+                die "$service emitted readiness marker but is no longer running"
+
+            echo "    $service ready"
+            return 0
+        fi
+
+        sleep 0.2
+    done
+
+    echo
+    echo "Last logs from $service:" >&2
+    compose logs --no-color --tail=100 "$service" >&2 || true
+
+    die "Timeout waiting for $service readiness"
+}
+
+start_base_services() {
+    echo
+    echo "==> Starting CAS and Trustees"
+
+    compose up -d \
+        cas \
+        trustee-0 \
+        trustee-1 \
+        trustee-2
+
+    echo
+    echo "==> Waiting for Trustee gRPC readiness"
+
+    wait_for_trustee trustee-0 0
+    wait_for_trustee trustee-1 1
+    wait_for_trustee trustee-2 2
+}
+
+archive_setup_input() {
+    echo
+    echo "==> Archiving setup input"
+
+    cp \
+        "$REPO_ROOT/setup-config.json" \
+        "$RESULT_DIR/setup/setup-config.json"
+}
+
+run_dealer() {
+    echo
+    echo "==> Running Dealer"
+
+    compose --profile setup \
+        run --rm --no-deps dealer \
+        2>&1 | tee "$RESULT_DIR/logs/dealer.log"
+
+    # The archived configuration must be exactly the one that remained
+    # present in the repository while the Dealer was executing.
+    cmp -s \
+        "$REPO_ROOT/setup-config.json" \
+        "$RESULT_DIR/setup/setup-config.json" ||
+        die "setup-config.json changed while Dealer setup was running"
+}
+
+archive_bulletin_board() {
+    echo
+    echo "==> Archiving BulletinBoard"
+
+    compose exec -T trustee-0 \
+        cat /bulletin/board.json \
+        > "$RESULT_DIR/setup/bulletin-board.json"
+
+    [[ -s "$RESULT_DIR/setup/bulletin-board.json" ]] ||
+        die "Archived BulletinBoard is empty"
+
+    (
+        cd "$RESULT_DIR/setup"
+        sha256sum \
+            setup-config.json \
+            bulletin-board.json \
+            > SHA256SUMS
+    )
+}
+
+wait_for_aggregator() {
+    local timeout_seconds=30
+    local deadline=$((SECONDS + timeout_seconds))
+    local http_code
+
+    while (( SECONDS < deadline )); do
+        http_code="$(
+            curl \
+                -sS \
+                --max-time 1 \
+                -o /dev/null \
+                -w '%{http_code}' \
+                http://localhost:8081/ \
+                2>/dev/null || true
+        )"
+
+        if [[ "$http_code" == "404" ]]; then
+            echo "    aggregator HTTP ready"
+            return 0
+        fi
+
+        sleep 0.2
+    done
+
+    compose logs --no-color --tail=100 aggregator >&2 || true
+    die "Timeout waiting for Aggregator HTTP readiness"
+}
+
+start_aggregator() {
+    echo
+    echo "==> Starting Aggregator"
+
+    compose up -d aggregator
+
+    wait_for_aggregator
+}
+
+archive_deployment_snapshot() {
+    echo
+    echo "==> Archiving deployment snapshot"
+
+    compose ps \
+        > "$RESULT_DIR/setup/docker-compose-ps.txt"
+
+    compose ps -q \
+        cas \
+        trustee-0 \
+        trustee-1 \
+        trustee-2 \
+        aggregator \
+        > "$RESULT_DIR/setup/container-ids.txt"
+}
+
+finalize_setup_manifest() {
+    python3 - \
+        "$RESULT_DIR/manifest.json" \
+        "$RESULT_DIR/setup/setup-config.json" \
+        "$RESULT_DIR/setup/bulletin-board.json" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+config_path = Path(sys.argv[2])
+board_path = Path(sys.argv[3])
+
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+config = json.loads(config_path.read_text(encoding="utf-8"))
+board = json.loads(board_path.read_text(encoding="utf-8"))
+
+config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
+board_sha256 = hashlib.sha256(board_path.read_bytes()).hexdigest()
+
+public_key = bytes.fromhex(board["lmsPublicKey"])
+public_key_sha256 = hashlib.sha256(public_key).hexdigest()
+
+manifest["setup"] = {
+    "setup_config_sha256": config_sha256,
+    "bulletin_board_sha256": board_sha256,
+    "lms_public_key_sha256": public_key_sha256,
+    "cl_cid": board["clCid"],
+    "total_trustees": config["k"],
+    "lms_params": config["lmsParams"],
+    "lmots_params": config["lmotsParams"],
+    "coalition_pattern": config["coalitionPattern"],
+}
+
+manifest["deployment"] = {
+    "status": "running",
+    "metrics_directory": "raw",
+}
+
+manifest["experiment"]["status"] = "ready_for_signing"
+
+manifest_path.write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+verify_zero_keyids() {
+    [[ ! -s "$RESULT_DIR/keyids.jsonl" ]] ||
+        die "KeyID ledger is not empty before signing phase"
+}
+
+print_summary() {
+    echo
+    echo "Experiment deployment ready:"
+    echo "  id:      $EXPERIMENT_ID"
+    echo "  results: $RESULT_DIR"
+    echo "  status:  ready_for_signing"
+    echo
+    echo "Reserved KeyIDs: 0"
+    echo "Deployment intentionally left running."
+}
+
+main() {
+    for cmd in \
+        git \
+        python3 \
+        date \
+        docker \
+        mvn \
+        grep \
+        curl \
+        tee \
+        cmp \
+        sha256sum
+    do
+        require_command "$cmd"
+    done
+
+    docker compose version >/dev/null 2>&1 ||
+        die "Docker Compose plugin is not available"
+
+    cd "$REPO_ROOT"
+
+    create_experiment "${1:-}"
+
+    fresh_deployment
+    build_artifacts
+
+    start_base_services
+
+    archive_setup_input
+    run_dealer
+    archive_bulletin_board
+
+    start_aggregator
+    archive_deployment_snapshot
+
+    verify_zero_keyids
+    finalize_setup_manifest
+
+    print_summary
 }
 
 main "$@"
