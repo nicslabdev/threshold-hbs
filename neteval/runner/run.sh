@@ -9,6 +9,11 @@ KLL_OPENSSL_PREFIX="${KLL_OPENSSL_PREFIX:-}"
 NETEM_SCRIPT="${REPO_ROOT}/neteval/netem/netem.sh"
 EXPERIMENT_COMPLETED=false
 
+PROFILES_FILE="${REPO_ROOT}/neteval/runner/profiles.json"
+PROFILE_ORDER_FILE=""
+KLL_PROFILE_SEED="${KLL_PROFILE_SEED:-20260816}"
+MEASURED_SAMPLES_PER_PROFILE="${KLL_MEASURED_SAMPLES:-3}"
+
 OPENSSL_BIN=""
 OPENSSL_LD_LIBRARY_PATH=""
 
@@ -46,6 +51,61 @@ compose() {
     KLL_METRICS_DIR="${RESULT_DIR}/raw" \
         docker compose "${COMPOSE_FILES[@]}" "$@"
 }
+
+prepare_profile_order() {
+    echo
+    echo "==> Preparing randomized profile order"
+    echo "    seed: $KLL_PROFILE_SEED"
+
+    PROFILE_ORDER_FILE="$RESULT_DIR/profile-order.json"
+
+    python3 - \
+        "$PROFILES_FILE" \
+        "$PROFILE_ORDER_FILE" \
+        "$KLL_PROFILE_SEED" <<'PY'
+import json
+import random
+import sys
+from pathlib import Path
+
+profiles_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+seed = int(sys.argv[3])
+
+config = json.loads(
+    profiles_path.read_text(encoding="utf-8")
+)
+
+profiles = config["profiles"]
+
+ids = [p["profile_id"] for p in profiles]
+
+if len(ids) != len(set(ids)):
+    raise SystemExit("Duplicate profile_id in profiles.json")
+
+rng = random.Random(seed)
+
+order = profiles.copy()
+rng.shuffle(order)
+
+result = {
+    "schema_version": 1,
+    "seed": seed,
+    "profiles": order,
+}
+
+output_path.write_text(
+    json.dumps(result, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+
+print("    order:", " -> ".join(
+    p["profile_id"] for p in order
+))
+PY
+}
+
+
 
 create_experiment() {
     EXPERIMENT_ID="${1:-$(make_experiment_id)}"
@@ -716,61 +776,57 @@ PY
 
 configure_network_profile() {
     local profile_id="$1"
+    local target_rtt_ms="$2"
 
-    mkdir -p "$RESULT_DIR/network/$profile_id"
+    local profile_dir="$RESULT_DIR/network/$profile_id"
 
-    case "$profile_id" in
+    mkdir -p "$profile_dir"
 
-        baseline)
-            echo
-            echo "==> Configuring network profile: baseline"
+    echo
+    echo "==> Configuring network profile: $profile_id"
+    echo "    configured RTT: ${target_rtt_ms} ms"
 
-            sudo -v
+    sudo -v
 
-            sudo "$NETEM_SCRIPT" reset \
-                > "$RESULT_DIR/network/baseline/reset.txt" 2>&1
+    if [[ "$target_rtt_ms" == "0" ]]; then
 
-            sudo "$NETEM_SCRIPT" show \
-                > "$RESULT_DIR/network/baseline/qdisc-before.txt" 2>&1
+        sudo "$NETEM_SCRIPT" reset \
+            > "$profile_dir/configure.txt" 2>&1
 
-            if grep -q 'qdisc netem' \
-                "$RESULT_DIR/network/baseline/qdisc-before.txt"
-            then
-                die "Baseline unexpectedly contains an active netem qdisc"
-            fi
+    else
 
-            capture_profile_rtt \
-                baseline \
-                0 \
-                false
-            ;;
+        sudo "$NETEM_SCRIPT" apply \
+            "$target_rtt_ms" \
+            "$target_rtt_ms" \
+            "$target_rtt_ms" \
+            > "$profile_dir/configure.txt" 2>&1
+    fi
 
-        rtt80)
-            echo
-            echo "==> Configuring network profile: RTT80"
+    sudo "$NETEM_SCRIPT" show \
+        > "$profile_dir/qdisc-before.txt" 2>&1
 
-            sudo -v
+    if [[ "$target_rtt_ms" == "0" ]]; then
 
-            sudo "$NETEM_SCRIPT" apply 80 80 80 \
-                > "$RESULT_DIR/network/rtt80/apply.txt" 2>&1
+        if grep -q 'qdisc netem' \
+            "$profile_dir/qdisc-before.txt"
+        then
+            die \
+                "Baseline profile unexpectedly contains " \
+                "an active netem qdisc"
+        fi
 
-            sudo "$NETEM_SCRIPT" show \
-                > "$RESULT_DIR/network/rtt80/qdisc-before.txt" 2>&1
+    else
 
-            grep -q 'qdisc netem' \
-                "$RESULT_DIR/network/rtt80/qdisc-before.txt" ||
-                die "RTT80 profile does not contain netem qdiscs"
+        grep -q 'qdisc netem' \
+            "$profile_dir/qdisc-before.txt" ||
+            die \
+                "$profile_id does not contain active " \
+                "netem qdiscs"
+    fi
 
-            capture_profile_rtt \
-                rtt80 \
-                80 \
-                true
-            ;;
-
-        *)
-            die "Unknown network profile: $profile_id"
-            ;;
-    esac
+    capture_profile_rtt \
+        "$profile_id" \
+        "$target_rtt_ms"
 }
 
 capture_profile_rtt() {
@@ -831,15 +887,16 @@ capture_profile_rtt() {
                 -t "$agg_pid" \
                 -n \
                 ping \
-                -c 10 \
-                -W 2 \
-                "$ip"
+                    -c 10 \
+                    -i 0.2 \
+                    -W 2 \
+                    "$ip"
 
             echo
         } >> "$output"
     done
 
-    if [[ "$validate" == "true" ]]; then
+    if [[ "$target_rtt_ms" != "0" ]]; then
         validate_rtt_profile \
             "$profile_id" \
             "$target_rtt_ms" \
@@ -925,20 +982,30 @@ PY
 }
 
 warmup_system() {
-    echo
-    echo "==> Running global warm-up"
-
-    sign_once \
-        warmup \
-        baseline \
-        warmup-001 ||
+    sign_once warmup warmup warmup-001 ||
         die "warmup-001 failed"
 
-    sign_once \
-        warmup \
-        baseline \
-        warmup-002 ||
+    sign_once warmup warmup warmup-002 ||
         die "warmup-002 failed"
+}
+
+prepare_warmup_network() {
+    echo
+    echo "==> Preparing unshaped network for global warm-up"
+
+    mkdir -p "$RESULT_DIR/network/warmup"
+
+    sudo "$NETEM_SCRIPT" reset \
+        > "$RESULT_DIR/network/warmup/reset.txt" 2>&1
+
+    sudo "$NETEM_SCRIPT" show \
+        > "$RESULT_DIR/network/warmup/qdisc.txt" 2>&1
+
+    if grep -q 'qdisc netem' \
+        "$RESULT_DIR/network/warmup/qdisc.txt"
+    then
+        die "Warm-up network unexpectedly contains netem"
+    fi
 }
 
 run_profile_samples() {
@@ -954,8 +1021,10 @@ run_profile_samples() {
         die "$profile_id conditioning failed"
 
     local i
+    local run_id
 
-    for i in 1 2 3; do
+    for ((i = 1; i <= MEASURED_SAMPLES_PER_PROFILE; i++)); do
+
         printf -v run_id \
             '%s-measured-%03d' \
             "$profile_id" \
@@ -969,6 +1038,53 @@ run_profile_samples() {
     done
 }
 
+run_profile_matrix() {
+    echo
+    echo "==> Running randomized network profile matrix"
+
+    local profiles_tsv
+    profiles_tsv="$RESULT_DIR/profile-order.tsv"
+
+    python3 - \
+        "$PROFILE_ORDER_FILE" \
+        "$profiles_tsv" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config = json.load(open(sys.argv[1]))
+
+lines = []
+
+for profile in config["profiles"]:
+    lines.append(
+        f'{profile["profile_id"]}\t{profile["rtt_ms"]}'
+    )
+
+Path(sys.argv[2]).write_text(
+    "\n".join(lines) + "\n",
+    encoding="utf-8",
+)
+PY
+
+    local profile_id
+    local rtt_ms
+
+    while IFS=$'\t' read -r profile_id rtt_ms; do
+
+        configure_network_profile \
+            "$profile_id" \
+            "$rtt_ms"
+
+        run_profile_samples \
+            "$profile_id"
+
+        capture_profile_final_state \
+            "$profile_id"
+
+    done < "$profiles_tsv"
+}
+
 capture_profile_final_state() {
     local profile_id="$1"
 
@@ -979,14 +1095,16 @@ capture_profile_final_state() {
         > "$RESULT_DIR/network/$profile_id/qdisc-after.txt" 2>&1
 }
 
-validate_er2_results() {
+validate_experiment_results() {
     echo
-    echo "==> Validating ER-2 result set"
+    echo "==> Validating experiment result set"
 
     python3 - \
         "$RESULT_DIR/keyids.jsonl" \
         "$RESULT_DIR/samples.jsonl" \
-        "$RESULT_DIR/raw" <<'PY'
+        "$RESULT_DIR/raw/aggregator.jsonl" \
+        "$PROFILES_FILE" \
+        "$MEASURED_SAMPLES_PER_PROFILE" <<'PY'
 import json
 import sys
 from collections import Counter
@@ -994,7 +1112,10 @@ from pathlib import Path
 
 ledger_path = Path(sys.argv[1])
 samples_path = Path(sys.argv[2])
-raw_dir = Path(sys.argv[3])
+agg_path = Path(sys.argv[3])
+profiles_path = Path(sys.argv[4])
+
+measured_per_profile = int(sys.argv[5])
 
 def read_jsonl(path):
     return [
@@ -1007,141 +1128,193 @@ def read_jsonl(path):
 
 ledger = read_jsonl(ledger_path)
 samples = read_jsonl(samples_path)
+agg = read_jsonl(agg_path)
 
-if len(ledger) != 10:
+profiles_config = json.loads(
+    profiles_path.read_text(encoding="utf-8")
+)
+
+profile_ids = [
+    p["profile_id"]
+    for p in profiles_config["profiles"]
+]
+
+profile_count = len(profile_ids)
+
+expected_total = (
+    2
+    + profile_count
+    + profile_count * measured_per_profile
+)
+
+if len(ledger) != expected_total:
     raise SystemExit(
-        f"Expected 10 reservations, found {len(ledger)}"
+        f"Expected {expected_total} reservations, "
+        f"found {len(ledger)}"
     )
 
-if len(samples) != 10:
+if len(samples) != expected_total:
     raise SystemExit(
-        f"Expected 10 samples, found {len(samples)}"
+        f"Expected {expected_total} samples, "
+        f"found {len(samples)}"
     )
 
 ids = [r["key_id"] for r in ledger]
 
-if ids != list(range(10)):
+if ids != list(range(expected_total)):
     raise SystemExit(
         f"Unexpected KeyID sequence: {ids}"
     )
 
-ledger_runs = {r["run_id"] for r in ledger}
-sample_runs = {r["run_id"] for r in samples}
-
-if ledger_runs != sample_runs:
+if (
+    {r["run_id"] for r in ledger}
+    !=
+    {r["run_id"] for r in samples}
+):
     raise SystemExit(
         "Ledger/sample run_id sets differ"
     )
 
-type_counts = Counter(
+types = Counter(
     s["sample_type"] for s in samples
 )
 
 expected_types = {
     "warmup": 2,
-    "conditioning": 2,
-    "measured": 6,
+    "conditioning": profile_count,
+    "measured": profile_count * measured_per_profile,
 }
 
-if dict(type_counts) != expected_types:
+if dict(types) != expected_types:
     raise SystemExit(
-        f"Unexpected sample types: {dict(type_counts)}"
+        f"Unexpected sample counts: {dict(types)}"
     )
 
-measured_profiles = Counter(
-    s["profile_id"]
-    for s in samples
-    if s["sample_type"] == "measured"
-)
+for profile_id in profile_ids:
 
-if dict(measured_profiles) != {
-    "baseline": 3,
-    "rtt80": 3,
-}:
-    raise SystemExit(
-        f"Unexpected measured profile counts: "
-        f"{dict(measured_profiles)}"
-    )
+    conditioning = [
+        s for s in samples
+        if (
+            s["profile_id"] == profile_id
+            and s["sample_type"] == "conditioning"
+        )
+    ]
 
-conditioning_profiles = Counter(
-    s["profile_id"]
-    for s in samples
-    if s["sample_type"] == "conditioning"
-)
+    measured = [
+        s for s in samples
+        if (
+            s["profile_id"] == profile_id
+            and s["sample_type"] == "measured"
+        )
+    ]
 
-if dict(conditioning_profiles) != {
-    "baseline": 1,
-    "rtt80": 1,
-}:
-    raise SystemExit(
-        f"Unexpected conditioning counts: "
-        f"{dict(conditioning_profiles)}"
-    )
-
-for s in samples:
-    if s["http_status"] != 200:
+    if len(conditioning) != 1:
         raise SystemExit(
-            f"HTTP failure: {s['run_id']}"
+            f"{profile_id}: expected one conditioning sample"
         )
 
-    if not s["http_success"]:
+    if len(measured) != measured_per_profile:
         raise SystemExit(
-            f"http_success=false: {s['run_id']}"
+            f"{profile_id}: expected "
+            f"{measured_per_profile} measured samples, "
+            f"found {len(measured)}"
         )
 
-    if s["verification_status"] != "success":
+for sample in samples:
+    if sample["http_status"] != 200:
         raise SystemExit(
-            f"Verification failure: {s['run_id']}"
+            f"HTTP failure: {sample['run_id']}"
         )
 
-    if s["verification_exit_code"] != 0:
+    if not sample["http_success"]:
         raise SystemExit(
-            f"Verification rc != 0: {s['run_id']}"
+            f"HTTP success=false: {sample['run_id']}"
         )
 
-    if not s["valid"]:
+    if sample["verification_status"] != "success":
         raise SystemExit(
-            f"Invalid signature: {s['run_id']}"
+            f"Verification failure: {sample['run_id']}"
         )
 
-# Aggregator emits exactly:
-# 2 R1 client events + 2 R2 client events +
-# 1 aggregator_sign for coalition size 2.
-agg = read_jsonl(raw_dir / "aggregator.jsonl")
+    if sample["verification_exit_code"] != 0:
+        raise SystemExit(
+            f"Verification rc != 0: {sample['run_id']}"
+        )
 
-if len(agg) != 50:
-    raise SystemExit(
-        f"Expected 50 Aggregator events, found {len(agg)}"
-    )
+    if not sample["valid"]:
+        raise SystemExit(
+            f"Invalid signature: {sample['run_id']}"
+        )
 
 aggregator_signs = [
     r for r in agg
     if r.get("event") == "aggregator_sign"
 ]
 
-if len(aggregator_signs) != 10:
+if len(aggregator_signs) != expected_total:
     raise SystemExit(
-        f"Expected 10 aggregator_sign records, "
+        f"Expected {expected_total} aggregator_sign records, "
         f"found {len(aggregator_signs)}"
     )
 
 if {
     r["key_id"] for r in aggregator_signs
-} != set(range(10)):
+} != set(range(expected_total)):
     raise SystemExit(
-        "Aggregator key_id coverage is incomplete"
+        "Incomplete aggregator_sign KeyID coverage"
     )
 
-print("ER-2 validation successful")
-print("  reservations:  10")
-print("  warmup:         2")
-print("  conditioning:   2")
-print("  measured:       6")
-print("  baseline meas.:  3")
-print("  RTT80 meas.:     3")
-print("  valid:          10/10")
-print("  aggregator:     50 events")
+# Current experiment uses coalition size 2:
+# 4 gRPC client events + 1 aggregator_sign/sample.
+expected_agg_events = expected_total * 5
+
+if len(agg) != expected_agg_events:
+    raise SystemExit(
+        f"Expected {expected_agg_events} Aggregator events, "
+        f"found {len(agg)}"
+    )
+
+print("Experiment validation successful")
+print(f"  profiles:       {profile_count}")
+print(f"  reservations:   {expected_total}")
+print(f"  warmup:         2")
+print(f"  conditioning:   {profile_count}")
+print(
+    f"  measured:       "
+    f"{profile_count * measured_per_profile}"
+)
+print(f"  valid:          {expected_total}/{expected_total}")
 PY
+}
+
+validate_key_capacity() {
+    local required
+
+    required="$(
+        python3 - \
+            "$PROFILES_FILE" \
+            "$MEASURED_SAMPLES_PER_PROFILE" <<'PY'
+import json
+import sys
+
+config = json.load(open(sys.argv[1]))
+measured = int(sys.argv[2])
+
+profiles = len(config["profiles"])
+
+print(2 + profiles * (1 + measured))
+PY
+    )"
+
+    echo
+    echo "==> Checking KeyID capacity"
+    echo "    available: $KEY_LIMIT"
+    echo "    required:  $required"
+
+    (( required <= KEY_LIMIT )) ||
+        die \
+            "Experiment requires $required KeyIDs " \
+            "but LMS setup provides only $KEY_LIMIT"
 }
 
 sign_once() {
@@ -1343,50 +1516,56 @@ shutdown_deployment() {
         down -v --remove-orphans
 }
 
-finalize_er2_manifest() {
+finalize_experiment_manifest() {
     echo
-    echo "==> Finalizing ER-2 manifest"
+    echo "==> Finalizing experiment manifest"
 
     python3 - \
         "$RESULT_DIR/manifest.json" \
+        "$PROFILE_ORDER_FILE" \
+        "$MEASURED_SAMPLES_PER_PROFILE" \
         "$(utc_now)" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-path = Path(sys.argv[1])
-finished_at = sys.argv[2]
+manifest_path = Path(sys.argv[1])
+order_path = Path(sys.argv[2])
+measured = int(sys.argv[3])
+finished_at = sys.argv[4]
 
 manifest = json.loads(
-    path.read_text(encoding="utf-8")
+    manifest_path.read_text(encoding="utf-8")
 )
+
+order = json.loads(
+    order_path.read_text(encoding="utf-8")
+)
+
+profiles = order["profiles"]
 
 manifest["experiment"]["finished_at"] = finished_at
 manifest["experiment"]["status"] = "completed"
 
 manifest["execution"] = {
     "concurrency": 1,
-    "total_signing_attempts": 10,
     "warmup_samples": 2,
-    "profiles": [
-        {
-            "profile_id": "baseline",
-            "configured_rtt_ms": 0,
-            "conditioning_samples": 1,
-            "measured_samples": 3,
-        },
-        {
-            "profile_id": "rtt80",
-            "configured_rtt_ms": 80,
-            "conditioning_samples": 1,
-            "measured_samples": 3,
-        },
+    "conditioning_samples_per_profile": 1,
+    "measured_samples_per_profile": measured,
+    "total_signing_attempts": (
+        2 + len(profiles) * (1 + measured)
+    ),
+    "profile_order_seed": order["seed"],
+    "profile_order": [
+        p["profile_id"]
+        for p in profiles
     ],
+    "profiles": profiles,
 }
 
 manifest["deployment"]["status"] = "completed"
 
-path.write_text(
+manifest_path.write_text(
     json.dumps(
         manifest,
         indent=2,
@@ -1452,14 +1631,12 @@ PY
 
 print_summary() {
     echo
-    echo "ER-2 network-profile experiment complete:"
+    echo "Network-profile experiment complete:"
     echo "  id:            $EXPERIMENT_ID"
     echo "  results:       $RESULT_DIR"
-    echo "  profiles:      baseline, rtt80"
+    echo "  profiles:      4"
     echo "  warmups:       2"
-    echo "  conditioning:  2"
-    echo "  measured:      6"
-    echo "  verified:      10/10"
+    echo "  measured/profile: $MEASURED_SAMPLES_PER_PROFILE"
     echo "  status:        completed"
 }
 
@@ -1510,21 +1687,18 @@ main() {
     verify_zero_keyids
     finalize_setup_manifest
 
-    configure_network_profile baseline
+    validate_key_capacity
+    prepare_profile_order
 
+    prepare_warmup_network
     warmup_system
-    run_profile_samples baseline
-    capture_profile_final_state baseline
 
-    configure_network_profile rtt80
+    run_profile_matrix
 
-    run_profile_samples rtt80
-    capture_profile_final_state rtt80
-
-    validate_er2_results
+    validate_experiment_results
 
     shutdown_deployment
-    finalize_er2_manifest
+    finalize_experiment_manifest
 
     EXPERIMENT_COMPLETED=true
 
