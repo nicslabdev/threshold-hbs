@@ -16,10 +16,12 @@ TRUSTEE_SERVICES=()
 KLL_TRUSTEE_URLS=""
 SETUP_CONFIG_FILE=""
 
+KLL_WARMUP_SAMPLES="${KLL_WARMUP_SAMPLES:-10}"
+KLL_BLOCKS="${KLL_BLOCKS:-5}"
+KLL_MEASURED_PER_BLOCK="${KLL_MEASURED_PER_BLOCK:-10}"
+KLL_PROFILE_SEED="${KLL_PROFILE_SEED:-20260817}"
+
 PROFILES_FILE="${REPO_ROOT}/neteval/runner/profiles.json"
-PROFILE_ORDER_FILE=""
-KLL_PROFILE_SEED="${KLL_PROFILE_SEED:-20260816}"
-MEASURED_SAMPLES_PER_PROFILE="${KLL_MEASURED_SAMPLES:-3}"
 
 OPENSSL_BIN=""
 OPENSSL_LD_LIBRARY_PATH=""
@@ -30,6 +32,7 @@ WORKLOAD_FILE=""
 MESSAGE_SHA256=""
 MESSAGE_BYTES=""
 KEY_LIMIT=""
+SCHEDULE_FILE=""
 
 die() {
     echo "ERROR: $*" >&2
@@ -59,17 +62,19 @@ compose() {
         "$@"
 }
 
-prepare_profile_order() {
+prepare_schedule() {
     echo
-    echo "==> Preparing randomized profile order"
-    echo "    seed: $KLL_PROFILE_SEED"
+    echo "==> Preparing randomized block schedule"
+    echo "    seed:   $KLL_PROFILE_SEED"
+    echo "    blocks: $KLL_BLOCKS"
 
-    PROFILE_ORDER_FILE="$RESULT_DIR/profile-order.json"
+    SCHEDULE_FILE="$RESULT_DIR/schedule.json"
 
     python3 - \
         "$PROFILES_FILE" \
-        "$PROFILE_ORDER_FILE" \
-        "$KLL_PROFILE_SEED" <<'PY'
+        "$SCHEDULE_FILE" \
+        "$KLL_PROFILE_SEED" \
+        "$KLL_BLOCKS" <<'PY'
 import json
 import random
 import sys
@@ -78,6 +83,7 @@ from pathlib import Path
 profiles_path = Path(sys.argv[1])
 output_path = Path(sys.argv[2])
 seed = int(sys.argv[3])
+block_count = int(sys.argv[4])
 
 config = json.loads(
     profiles_path.read_text(encoding="utf-8")
@@ -88,17 +94,25 @@ profiles = config["profiles"]
 ids = [p["profile_id"] for p in profiles]
 
 if len(ids) != len(set(ids)):
-    raise SystemExit("Duplicate profile_id in profiles.json")
+    raise SystemExit("Duplicate profile_id")
 
 rng = random.Random(seed)
 
-order = profiles.copy()
-rng.shuffle(order)
+blocks = []
+
+for block_id in range(1, block_count + 1):
+    order = profiles.copy()
+    rng.shuffle(order)
+
+    blocks.append({
+        "block_id": block_id,
+        "profiles": order,
+    })
 
 result = {
     "schema_version": 1,
     "seed": seed,
-    "profiles": order,
+    "blocks": blocks,
 }
 
 output_path.write_text(
@@ -106,13 +120,16 @@ output_path.write_text(
     encoding="utf-8",
 )
 
-print("    order:", " -> ".join(
-    p["profile_id"] for p in order
-))
+for block in blocks:
+    print(
+        f'    block {block["block_id"]:02d}:',
+        " -> ".join(
+            p["profile_id"]
+            for p in block["profiles"]
+        ),
+    )
 PY
 }
-
-
 
 create_experiment() {
     EXPERIMENT_ID="${1:-$(make_experiment_id)}"
@@ -509,27 +526,29 @@ PY
 
 append_sample_record() {
     local run_id="$1"
-    local profile_id="$2"
-    local sample_type="$3"
-    local key_id="$4"
-    local started_at="$5"
-    local finished_at="$6"
-    local curl_rc="$7"
-    local http_status="$8"
-    local curl_time_total_s="$9"
-    local response_bytes="${10}"
-    local response_file="${11}"
-    local http_success="${12}"
-    local verification_status="${13}"
-    local verification_rc="${14}"
-    local verification_log="${15}"
-    local signature_sha256="${16}"
-    local valid="${17}"
+    local block_id="$2"
+    local profile_id="$3"
+    local sample_type="$4"
+    local key_id="$5"
+    local started_at="$6"
+    local finished_at="$7"
+    local curl_rc="$8"
+    local http_status="$9"
+    local curl_time_total_s="${10}"
+    local response_bytes="${11}"
+    local response_file="${12}"
+    local http_success="${13}"
+    local verification_status="${14}"
+    local verification_rc="${15}"
+    local verification_log="${16}"
+    local signature_sha256="${17}"
+    local valid="${18}"
 
     python3 - \
         "$RESULT_DIR/samples.jsonl" \
         "$EXPERIMENT_ID" \
         "$run_id" \
+        "$block_id" \
         "$profile_id" \
         "$sample_type" \
         "$key_id" \
@@ -557,6 +576,7 @@ from pathlib import Path
     output,
     experiment_id,
     run_id,
+    block_id,
     profile_id,
     sample_type,
     key_id,
@@ -581,6 +601,7 @@ record = {
     "schema_version": 1,
     "experiment_id": experiment_id,
     "run_id": run_id,
+    "block_id": int(block_id),
     "profile_id": profile_id,
     "sample_type": sample_type,
     "key_id": int(key_id),
@@ -881,24 +902,27 @@ PY
 configure_network_profile() {
     local profile_id="$1"
     local target_rtt_ms="$2"
+    local block_id="$3"
 
-    local profile_dir="$RESULT_DIR/network/$profile_id"
+    local block_label
+    local profile_dir
+
+    printf -v block_label 'block-%02d' "$block_id"
+    profile_dir="$RESULT_DIR/network/$block_label/$profile_id"
 
     mkdir -p "$profile_dir"
 
     echo
     echo "==> Configuring network profile: $profile_id"
+    echo "    block:          $block_id"
     echo "    configured RTT: ${target_rtt_ms} ms"
 
     sudo -v
 
     if [[ "$target_rtt_ms" == "0" ]]; then
-
         sudo "$NETEM_SCRIPT" reset \
             > "$profile_dir/configure.txt" 2>&1
-
     else
-
         sudo "$NETEM_SCRIPT" apply \
             "$target_rtt_ms" \
             > "$profile_dir/configure.txt" 2>&1
@@ -908,7 +932,6 @@ configure_network_profile() {
         > "$profile_dir/qdisc-before.txt" 2>&1
 
     if [[ "$target_rtt_ms" == "0" ]]; then
-
         if grep -q 'qdisc netem' \
             "$profile_dir/qdisc-before.txt"
         then
@@ -916,9 +939,7 @@ configure_network_profile() {
                 "Baseline profile unexpectedly contains " \
                 "an active netem qdisc"
         fi
-
     else
-
         grep -q 'qdisc netem' \
             "$profile_dir/qdisc-before.txt" ||
             die \
@@ -928,18 +949,25 @@ configure_network_profile() {
 
     capture_profile_rtt \
         "$profile_id" \
-        "$target_rtt_ms"
+        "$target_rtt_ms" \
+        "$block_id"
 }
 
 capture_profile_rtt() {
     local profile_id="$1"
     local target_rtt_ms="$2"
+    local block_id="$3"
 
     echo
-    echo "==> Capturing RTT for profile: $profile_id"
+    echo "==> Capturing RTT for profile: $profile_id (block $block_id)"
 
-    local profile_dir="$RESULT_DIR/network/$profile_id"
-    local output="$profile_dir/rtt.txt"
+    local block_label
+    local profile_dir
+    local output
+
+    printf -v block_label 'block-%02d' "$block_id"
+    profile_dir="$RESULT_DIR/network/$block_label/$profile_id"
+    output="$profile_dir/rtt.txt"
 
     mkdir -p "$profile_dir"
 
@@ -1083,11 +1111,24 @@ PY
 }
 
 warmup_system() {
-    sign_once warmup warmup warmup-001 ||
-        die "warmup-001 failed"
+    echo
+    echo "==> Running global warm-up"
 
-    sign_once warmup warmup warmup-002 ||
-        die "warmup-002 failed"
+    local i
+    local run_id
+
+    for ((i = 1; i <= KLL_WARMUP_SAMPLES; i++)); do
+        printf -v run_id \
+            'warmup-%03d' \
+            "$i"
+
+        sign_once \
+            warmup \
+            warmup \
+            "$run_id" \
+            0 ||
+            die "$run_id failed"
+    done
 }
 
 prepare_warmup_network() {
@@ -1109,58 +1150,69 @@ prepare_warmup_network() {
     fi
 }
 
-run_profile_samples() {
-    local profile_id="$1"
+run_profile_block() {
+    local block_id="$1"
+    local profile_id="$2"
 
     echo
-    echo "==> Running profile block: $profile_id"
+    echo "==> Running profile block: block=$block_id profile=$profile_id"
+
+    local run_id
+
+    printf -v run_id \
+        'block-%02d-%s-conditioning-001' \
+        "$block_id" \
+        "$profile_id"
 
     sign_once \
         conditioning \
         "$profile_id" \
-        "${profile_id}-conditioning-001" ||
-        die "$profile_id conditioning failed"
+        "$run_id" \
+        "$block_id" ||
+        die "$run_id failed"
 
     local i
-    local run_id
 
-    for ((i = 1; i <= MEASURED_SAMPLES_PER_PROFILE; i++)); do
-
+    for ((i = 1; i <= KLL_MEASURED_PER_BLOCK; i++)); do
         printf -v run_id \
-            '%s-measured-%03d' \
+            'block-%02d-%s-measured-%03d' \
+            "$block_id" \
             "$profile_id" \
             "$i"
 
         sign_once \
             measured \
             "$profile_id" \
-            "$run_id" ||
+            "$run_id" \
+            "$block_id" ||
             die "$run_id failed"
     done
 }
 
-run_profile_matrix() {
+run_schedule() {
     echo
-    echo "==> Running randomized network profile matrix"
+    echo "==> Running randomized block schedule"
 
-    local profiles_tsv
-    profiles_tsv="$RESULT_DIR/profile-order.tsv"
+    local schedule_tsv="$RESULT_DIR/schedule.tsv"
 
     python3 - \
-        "$PROFILE_ORDER_FILE" \
-        "$profiles_tsv" <<'PY'
+        "$SCHEDULE_FILE" \
+        "$schedule_tsv" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-config = json.load(open(sys.argv[1]))
+schedule = json.load(open(sys.argv[1], encoding="utf-8"))
 
 lines = []
-
-for profile in config["profiles"]:
-    lines.append(
-        f'{profile["profile_id"]}\t{profile["rtt_ms"]}'
-    )
+for block in schedule["blocks"]:
+    block_id = block["block_id"]
+    for profile in block["profiles"]:
+        lines.append(
+            f'{block_id}\t'
+            f'{profile["profile_id"]}\t'
+            f'{profile["rtt_ms"]}'
+        )
 
 Path(sys.argv[2]).write_text(
     "\n".join(lines) + "\n",
@@ -1168,32 +1220,49 @@ Path(sys.argv[2]).write_text(
 )
 PY
 
+    local block_id
     local profile_id
     local rtt_ms
 
-    while IFS=$'\t' read -r profile_id rtt_ms; do
+    while IFS=$'\t' read -r \
+        block_id profile_id rtt_ms
+    do
+        echo
+        echo "========================================"
+        echo "Block $block_id / $KLL_BLOCKS"
+        echo "Profile: $profile_id"
+        echo "========================================"
 
         configure_network_profile \
             "$profile_id" \
-            "$rtt_ms"
+            "$rtt_ms" \
+            "$block_id"
 
-        run_profile_samples \
+        run_profile_block \
+            "$block_id" \
             "$profile_id"
 
         capture_profile_final_state \
-            "$profile_id"
-
-    done < "$profiles_tsv"
+            "$profile_id" \
+            "$block_id"
+    done < "$schedule_tsv"
 }
 
 capture_profile_final_state() {
     local profile_id="$1"
+    local block_id="$2"
+
+    local block_label
+    local profile_dir
+
+    printf -v block_label 'block-%02d' "$block_id"
+    profile_dir="$RESULT_DIR/network/$block_label/$profile_id"
 
     echo
-    echo "==> Capturing final network state: $profile_id"
+    echo "==> Capturing final network state: $profile_id (block $block_id)"
 
     sudo "$NETEM_SCRIPT" show \
-        > "$RESULT_DIR/network/$profile_id/qdisc-after.txt" 2>&1
+        > "$profile_dir/qdisc-after.txt" 2>&1
 }
 
 validate_experiment_results() {
@@ -1204,8 +1273,9 @@ validate_experiment_results() {
         "$RESULT_DIR/keyids.jsonl" \
         "$RESULT_DIR/samples.jsonl" \
         "$RESULT_DIR/raw/aggregator.jsonl" \
-        "$PROFILES_FILE" \
-        "$MEASURED_SAMPLES_PER_PROFILE" \
+        "$SCHEDULE_FILE" \
+        "$KLL_WARMUP_SAMPLES" \
+        "$KLL_MEASURED_PER_BLOCK" \
         "$RESULT_DIR/setup/setup-config.json" <<'PY'
 import json
 import sys
@@ -1215,17 +1285,16 @@ from pathlib import Path
 ledger_path = Path(sys.argv[1])
 samples_path = Path(sys.argv[2])
 agg_path = Path(sys.argv[3])
-profiles_path = Path(sys.argv[4])
-measured_per_profile = int(sys.argv[5])
-setup_path = Path(sys.argv[6])
+schedule_path = Path(sys.argv[4])
+warmup_count = int(sys.argv[5])
+measured_per_block = int(sys.argv[6])
+setup_path = Path(sys.argv[7])
 
 
 def read_jsonl(path):
     return [
         json.loads(line)
-        for line in path.read_text(
-            encoding="utf-8"
-        ).splitlines()
+        for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
 
@@ -1233,373 +1302,221 @@ def read_jsonl(path):
 ledger = read_jsonl(ledger_path)
 samples = read_jsonl(samples_path)
 agg = read_jsonl(agg_path)
-
-setup = json.loads(
-    setup_path.read_text(encoding="utf-8")
-)
-
-profiles_config = json.loads(
-    profiles_path.read_text(encoding="utf-8")
-)
+setup = json.loads(setup_path.read_text(encoding="utf-8"))
+schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
 
 trustee_count = setup["k"]
-
 expected_coalition = list(range(trustee_count))
-
 if setup["coalitionPattern"] != [expected_coalition]:
     raise SystemExit(
         "Unexpected experimental coalition pattern: "
         f'{setup["coalitionPattern"]}'
     )
 
-profile_ids = [
-    p["profile_id"]
-    for p in profiles_config["profiles"]
-]
+blocks = schedule.get("blocks", [])
+if not blocks:
+    raise SystemExit("Schedule contains no blocks")
 
-profile_count = len(profile_ids)
+block_ids = [block["block_id"] for block in blocks]
+if block_ids != list(range(1, len(blocks) + 1)):
+    raise SystemExit(f"Unexpected block IDs in schedule: {block_ids}")
 
-expected_total = (
-    2
-    + profile_count
-    + profile_count * measured_per_profile
-)
+first_profile_ids = [p["profile_id"] for p in blocks[0]["profiles"]]
+if len(first_profile_ids) != len(set(first_profile_ids)):
+    raise SystemExit("Duplicate profile IDs in first schedule block")
 
+expected_profile_set = set(first_profile_ids)
+profile_count = len(expected_profile_set)
+if profile_count == 0:
+    raise SystemExit("Schedule contains no profiles")
+
+for block in blocks:
+    profile_ids = [p["profile_id"] for p in block["profiles"]]
+    if set(profile_ids) != expected_profile_set:
+        raise SystemExit(
+            f'Block {block["block_id"]}: profile set differs from first block'
+        )
+    if len(profile_ids) != profile_count:
+        raise SystemExit(f'Block {block["block_id"]}: duplicate profile IDs')
+
+block_count = len(blocks)
+conditioning_count = block_count * profile_count
+measured_count = block_count * profile_count * measured_per_block
+expected_total = warmup_count + conditioning_count + measured_count
 expected_keyids = set(range(expected_total))
-
-#
-# Ledger and samples
-#
 
 if len(ledger) != expected_total:
     raise SystemExit(
-        f"Expected {expected_total} reservations, "
-        f"found {len(ledger)}"
+        f"Expected {expected_total} reservations, found {len(ledger)}"
     )
-
 if len(samples) != expected_total:
     raise SystemExit(
-        f"Expected {expected_total} samples, "
-        f"found {len(samples)}"
+        f"Expected {expected_total} samples, found {len(samples)}"
     )
 
-ids = [
-    record["key_id"]
-    for record in ledger
-]
-
+ids = [record["key_id"] for record in ledger]
 if ids != list(range(expected_total)):
-    raise SystemExit(
-        f"Unexpected KeyID sequence: {ids}"
-    )
+    raise SystemExit(f"Unexpected KeyID sequence: {ids}")
 
-if (
-    {record["run_id"] for record in ledger}
-    !=
-    {record["run_id"] for record in samples}
-):
-    raise SystemExit(
-        "Ledger/sample run_id sets differ"
-    )
+if {r["run_id"] for r in ledger} != {r["run_id"] for r in samples}:
+    raise SystemExit("Ledger/sample run_id sets differ")
 
-types = Counter(
-    sample["sample_type"]
-    for sample in samples
-)
-
+types = Counter(sample["sample_type"] for sample in samples)
 expected_types = {
-    "warmup": 2,
-    "conditioning": profile_count,
-    "measured": (
-        profile_count * measured_per_profile
-    ),
+    "warmup": warmup_count,
+    "conditioning": conditioning_count,
+    "measured": measured_count,
 }
-
 if dict(types) != expected_types:
-    raise SystemExit(
-        f"Unexpected sample counts: {dict(types)}"
-    )
+    raise SystemExit(f"Unexpected sample counts: {dict(types)}")
 
-#
-# Per-profile sample counts
-#
+warmups = [s for s in samples if s["sample_type"] == "warmup"]
+for sample in warmups:
+    if sample.get("block_id") != 0:
+        raise SystemExit(f'{sample["run_id"]}: warm-up block_id must be 0')
+    if sample["profile_id"] != "warmup":
+        raise SystemExit(f'{sample["run_id"]}: unexpected warm-up profile_id')
 
-for profile_id in profile_ids:
-
-    conditioning = [
-        sample
-        for sample in samples
-        if (
-            sample["profile_id"] == profile_id
-            and
-            sample["sample_type"] == "conditioning"
-        )
-    ]
-
-    measured = [
-        sample
-        for sample in samples
-        if (
-            sample["profile_id"] == profile_id
-            and
-            sample["sample_type"] == "measured"
-        )
-    ]
-
-    if len(conditioning) != 1:
-        raise SystemExit(
-            f"{profile_id}: expected one "
-            "conditioning sample"
-        )
-
-    if len(measured) != measured_per_profile:
-        raise SystemExit(
-            f"{profile_id}: expected "
-            f"{measured_per_profile} measured samples, "
-            f"found {len(measured)}"
-        )
-
-#
-# Cryptographic validity
-#
+for block in blocks:
+    block_id = block["block_id"]
+    for profile in block["profiles"]:
+        profile_id = profile["profile_id"]
+        conditioning = [
+            sample for sample in samples
+            if sample.get("block_id") == block_id
+            and sample["profile_id"] == profile_id
+            and sample["sample_type"] == "conditioning"
+        ]
+        measured = [
+            sample for sample in samples
+            if sample.get("block_id") == block_id
+            and sample["profile_id"] == profile_id
+            and sample["sample_type"] == "measured"
+        ]
+        if len(conditioning) != 1:
+            raise SystemExit(
+                f"block={block_id} profile={profile_id}: expected one conditioning sample"
+            )
+        if len(measured) != measured_per_block:
+            raise SystemExit(
+                f"block={block_id} profile={profile_id}: expected "
+                f"{measured_per_block} measured samples, found {len(measured)}"
+            )
 
 for sample in samples:
-
     if sample["http_status"] != 200:
-        raise SystemExit(
-            f"HTTP failure: {sample['run_id']}"
-        )
-
+        raise SystemExit(f"HTTP failure: {sample['run_id']}")
     if not sample["http_success"]:
-        raise SystemExit(
-            f"HTTP success=false: "
-            f"{sample['run_id']}"
-        )
-
+        raise SystemExit(f"HTTP success=false: {sample['run_id']}")
     if sample["verification_status"] != "success":
-        raise SystemExit(
-            f"Verification failure: "
-            f"{sample['run_id']}"
-        )
-
+        raise SystemExit(f"Verification failure: {sample['run_id']}")
     if sample["verification_exit_code"] != 0:
-        raise SystemExit(
-            f"Verification rc != 0: "
-            f"{sample['run_id']}"
-        )
-
+        raise SystemExit(f"Verification rc != 0: {sample['run_id']}")
     if not sample["valid"]:
-        raise SystemExit(
-            f"Invalid signature: "
-            f"{sample['run_id']}"
-        )
-
-#
-# Aggregator metrics
-#
+        raise SystemExit(f"Invalid signature: {sample['run_id']}")
 
 aggregator_signs = [
-    record
-    for record in agg
-    if record.get("event") == "aggregator_sign"
+    record for record in agg if record.get("event") == "aggregator_sign"
 ]
-
 if len(aggregator_signs) != expected_total:
     raise SystemExit(
-        f"Expected {expected_total} "
-        "aggregator_sign records, "
+        f"Expected {expected_total} aggregator_sign records, "
         f"found {len(aggregator_signs)}"
     )
-
-if {
-    record["key_id"]
-    for record in aggregator_signs
-} != expected_keyids:
-    raise SystemExit(
-        "Incomplete aggregator_sign KeyID coverage"
-    )
+if {r["key_id"] for r in aggregator_signs} != expected_keyids:
+    raise SystemExit("Incomplete aggregator_sign KeyID coverage")
 
 expected_trustees = set(range(trustee_count))
-
 for record in aggregator_signs:
-
     if record["coalition_size"] != trustee_count:
         raise SystemExit(
-            f"KeyID {record['key_id']}: "
-            f"coalition_size="
-            f"{record['coalition_size']}, "
+            f"KeyID {record['key_id']}: coalition_size={record['coalition_size']}, "
             f"expected={trustee_count}"
         )
+    if set(record["trustee_indices"]) != expected_trustees:
+        raise SystemExit(f"KeyID {record['key_id']}: unexpected Trustee set")
 
-    if (
-        set(record["trustee_indices"])
-        != expected_trustees
-    ):
-        raise SystemExit(
-            f"KeyID {record['key_id']}: "
-            "unexpected Trustee set"
-        )
-
-events = Counter(
-    record["event"]
-    for record in agg
-)
-
-expected_rpc_events = (
-    expected_total * trustee_count
-)
-
-if (
-    events["grpc_client_round1"]
-    != expected_rpc_events
-):
+events = Counter(record["event"] for record in agg)
+expected_rpc_events = expected_total * trustee_count
+if events["grpc_client_round1"] != expected_rpc_events:
     raise SystemExit(
-        "Unexpected Round 1 RPC count: "
-        f'{events["grpc_client_round1"]}, '
+        f'Unexpected Round 1 RPC count: {events["grpc_client_round1"]}, '
         f"expected {expected_rpc_events}"
     )
-
-if (
-    events["grpc_client_round2"]
-    != expected_rpc_events
-):
+if events["grpc_client_round2"] != expected_rpc_events:
     raise SystemExit(
-        "Unexpected Round 2 RPC count: "
-        f'{events["grpc_client_round2"]}, '
+        f'Unexpected Round 2 RPC count: {events["grpc_client_round2"]}, '
         f"expected {expected_rpc_events}"
     )
-
 if events["aggregator_sign"] != expected_total:
-    raise SystemExit(
-        "Unexpected aggregator_sign count"
-    )
+    raise SystemExit("Unexpected aggregator_sign count")
 
-expected_agg_events = (
-    expected_total * (2 * trustee_count + 1)
-)
-
+expected_agg_events = expected_total * (2 * trustee_count + 1)
 if len(agg) != expected_agg_events:
     raise SystemExit(
-        f"Expected {expected_agg_events} "
-        "Aggregator events, "
-        f"found {len(agg)}"
+        f"Expected {expected_agg_events} Aggregator events, found {len(agg)}"
     )
-
-#
-# Trustee metrics
-#
-# Full-coalition experiment:
-# every Trustee participates in every signature.
-#
 
 for trustee_index in range(trustee_count):
-
-    trustee_path = (
-        agg_path.parent
-        / f"trustee-{trustee_index}.jsonl"
-    )
-
+    trustee_path = agg_path.parent / f"trustee-{trustee_index}.jsonl"
     if not trustee_path.exists():
-        raise SystemExit(
-            f"Missing metrics file: "
-            f"{trustee_path.name}"
-        )
+        raise SystemExit(f"Missing metrics file: {trustee_path.name}")
 
-    trustee_records = read_jsonl(
-        trustee_path
-    )
-
-    trustee_events = Counter(
-        record["event"]
-        for record in trustee_records
-    )
-
-    if (
-        trustee_events["trustee_round1"]
-        != expected_total
-    ):
-        raise SystemExit(
-            f"trustee-{trustee_index}: "
-            "unexpected Round 1 count"
-        )
-
-    if (
-        trustee_events["trustee_round2"]
-        != expected_total
-    ):
-        raise SystemExit(
-            f"trustee-{trustee_index}: "
-            "unexpected Round 2 count"
-        )
-
+    trustee_records = read_jsonl(trustee_path)
+    trustee_events = Counter(record["event"] for record in trustee_records)
+    if trustee_events["trustee_round1"] != expected_total:
+        raise SystemExit(f"trustee-{trustee_index}: unexpected Round 1 count")
+    if trustee_events["trustee_round2"] != expected_total:
+        raise SystemExit(f"trustee-{trustee_index}: unexpected Round 2 count")
     if len(trustee_records) != 2 * expected_total:
         raise SystemExit(
-            f"trustee-{trustee_index}: "
-            f"expected {2 * expected_total} events, "
+            f"trustee-{trustee_index}: expected {2 * expected_total} events, "
             f"found {len(trustee_records)}"
         )
 
-    for event_name in (
-        "trustee_round1",
-        "trustee_round2",
-    ):
+    for event_name in ("trustee_round1", "trustee_round2"):
         event_keyids = {
             record["key_id"]
             for record in trustee_records
             if record.get("event") == event_name
         }
-
         if event_keyids != expected_keyids:
             raise SystemExit(
-                f"trustee-{trustee_index}: "
-                f"incomplete KeyID coverage for "
-                f"{event_name}"
+                f"trustee-{trustee_index}: incomplete KeyID coverage for {event_name}"
             )
 
 print("Experiment validation successful")
 print(f"  trustees:       {trustee_count}")
 print(f"  coalition size: {trustee_count}")
+print(f"  blocks:         {block_count}")
 print(f"  profiles:       {profile_count}")
 print(f"  reservations:   {expected_total}")
-print("  warmup:         2")
-print(f"  conditioning:   {profile_count}")
-print(
-    "  measured:       "
-    f"{profile_count * measured_per_profile}"
-)
-print(
-    f"  aggregator:     "
-    f"{expected_agg_events} events"
-)
-print(
-    f"  trustee events: "
-    f"{2 * expected_total} each"
-)
-print(
-    f"  valid:          "
-    f"{expected_total}/{expected_total}"
-)
+print(f"  warmup:         {warmup_count}")
+print(f"  conditioning:   {conditioning_count}")
+print(f"  measured:       {measured_count}")
+print(f"  aggregator:     {expected_agg_events} events")
+print(f"  trustee events: {2 * expected_total} each")
+print(f"  valid:          {expected_total}/{expected_total}")
 PY
 }
 
 validate_key_capacity() {
+    local profile_count
     local required
 
-    required="$(
-        python3 - \
-            "$PROFILES_FILE" \
-            "$MEASURED_SAMPLES_PER_PROFILE" <<'PY'
+    profile_count="$(
+        python3 - "$PROFILES_FILE" <<'PY'
 import json
 import sys
 
-config = json.load(open(sys.argv[1]))
-measured = int(sys.argv[2])
-
-profiles = len(config["profiles"])
-
-print(2 + profiles * (1 + measured))
+print(len(json.load(open(sys.argv[1], encoding="utf-8"))["profiles"]))
 PY
     )"
+
+    required="$((
+        KLL_WARMUP_SAMPLES
+        + KLL_BLOCKS * profile_count * (1 + KLL_MEASURED_PER_BLOCK)
+    ))"
 
     echo
     echo "==> Checking KeyID capacity"
@@ -1608,7 +1525,7 @@ PY
 
     (( required <= KEY_LIMIT )) ||
         die \
-            "Experiment requires $required KeyIDs " \
+            "Campaign requires $required KeyIDs " \
             "but LMS setup provides only $KEY_LIMIT"
 }
 
@@ -1616,11 +1533,13 @@ sign_once() {
     local sample_type="$1"
     local profile_id="$2"
     local run_id="$3"
+    local block_id="$4"
 
     echo
     echo "==> Signing: $run_id"
     echo "    type:    $sample_type"
     echo "    profile: $profile_id"
+    echo "    block:   $block_id"
 
     local key_id
 
@@ -1759,6 +1678,7 @@ sign_once() {
 
     append_sample_record \
         "$run_id" \
+        "$block_id" \
         "$profile_id" \
         "$sample_type" \
         "$key_id" \
@@ -1817,55 +1737,47 @@ finalize_experiment_manifest() {
 
     python3 - \
         "$RESULT_DIR/manifest.json" \
-        "$PROFILE_ORDER_FILE" \
-        "$MEASURED_SAMPLES_PER_PROFILE" \
+        "$SCHEDULE_FILE" \
+        "$KLL_WARMUP_SAMPLES" \
+        "$KLL_MEASURED_PER_BLOCK" \
         "$(utc_now)" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 manifest_path = Path(sys.argv[1])
-order_path = Path(sys.argv[2])
-measured = int(sys.argv[3])
-finished_at = sys.argv[4]
+schedule_path = Path(sys.argv[2])
+warmup_count = int(sys.argv[3])
+measured_per_block = int(sys.argv[4])
+finished_at = sys.argv[5]
 
-manifest = json.loads(
-    manifest_path.read_text(encoding="utf-8")
-)
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
 
-order = json.loads(
-    order_path.read_text(encoding="utf-8")
-)
-
-profiles = order["profiles"]
+blocks = schedule["blocks"]
+block_count = len(blocks)
+profile_count = len(blocks[0]["profiles"]) if blocks else 0
+conditioning_count = block_count * profile_count
+measured_count = block_count * profile_count * measured_per_block
+total = warmup_count + conditioning_count + measured_count
 
 manifest["experiment"]["finished_at"] = finished_at
 manifest["experiment"]["status"] = "completed"
-
 manifest["execution"] = {
     "concurrency": 1,
-    "warmup_samples": 2,
-    "conditioning_samples_per_profile": 1,
-    "measured_samples_per_profile": measured,
-    "total_signing_attempts": (
-        2 + len(profiles) * (1 + measured)
-    ),
-    "profile_order_seed": order["seed"],
-    "profile_order": [
-        p["profile_id"]
-        for p in profiles
-    ],
-    "profiles": profiles,
+    "warmup_samples": warmup_count,
+    "block_count": block_count,
+    "conditioning_samples_per_profile_per_block": 1,
+    "measured_samples_per_profile_per_block": measured_per_block,
+    "measured_samples_per_profile": block_count * measured_per_block,
+    "total_signing_attempts": total,
+    "profile_order_seed": schedule["seed"],
+    "blocks": blocks,
 }
-
 manifest["deployment"]["status"] = "completed"
 
 manifest_path.write_text(
-    json.dumps(
-        manifest,
-        indent=2,
-        sort_keys=True,
-    ) + "\n",
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
     encoding="utf-8",
 )
 PY
@@ -1927,13 +1839,14 @@ PY
 print_summary() {
     echo
     echo "Network-profile experiment complete:"
-    echo "  id:            $EXPERIMENT_ID"
-    echo "  results:       $RESULT_DIR"
-    echo "  profiles:      4"
-    echo "  trustees:      $KLL_TRUSTEE_COUNT"
-    echo "  warmups:       2"
-    echo "  measured/profile: $MEASURED_SAMPLES_PER_PROFILE"
-    echo "  status:        completed"
+    echo "  id:                  $EXPERIMENT_ID"
+    echo "  results:             $RESULT_DIR"
+    echo "  trustees:            $KLL_TRUSTEE_COUNT"
+    echo "  warmups:             $KLL_WARMUP_SAMPLES"
+    echo "  blocks:              $KLL_BLOCKS"
+    echo "  measured/block:      $KLL_MEASURED_PER_BLOCK"
+    echo "  measured/profile:    $((KLL_BLOCKS * KLL_MEASURED_PER_BLOCK))"
+    echo "  status:              completed"
 }
 
 main() {
@@ -1985,12 +1898,12 @@ main() {
     finalize_setup_manifest
 
     validate_key_capacity
-    prepare_profile_order
+    prepare_schedule
 
     prepare_warmup_network
     warmup_system
 
-    run_profile_matrix
+    run_schedule
 
     validate_experiment_results
 

@@ -1,6 +1,6 @@
 {
   "k": 3,
-  "lmsParams": "lms_sha256_n32_h5",
+  "lmsParams": "lms_sha256_n32_h10",
   "lmotsParams": "sha256_n32_w4",
   "coalitionPattern": [
     [0, 1],
