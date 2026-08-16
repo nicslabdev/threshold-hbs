@@ -5,6 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 RESULTS_ROOT="${REPO_ROOT}/neteval/results"
+KLL_OPENSSL_PREFIX="${KLL_OPENSSL_PREFIX:-}"
+
+OPENSSL_BIN=""
+OPENSSL_LD_LIBRARY_PATH=""
 
 COMPOSE_FILES=(
     -f "${REPO_ROOT}/docker-compose.yml"
@@ -35,6 +39,57 @@ make_experiment_id() {
 compose() {
     KLL_METRICS_DIR="${RESULT_DIR}/raw" \
         docker compose "${COMPOSE_FILES[@]}" "$@"
+}
+
+configure_openssl() {
+    [[ -n "$KLL_OPENSSL_PREFIX" ]] ||
+        die "KLL_OPENSSL_PREFIX is required (OpenSSL build with LMS support)"
+
+    KLL_OPENSSL_PREFIX="$(
+        cd "$KLL_OPENSSL_PREFIX" 2>/dev/null && pwd
+    )" ||
+        die "Invalid KLL_OPENSSL_PREFIX: $KLL_OPENSSL_PREFIX"
+
+    OPENSSL_BIN="${KLL_OPENSSL_PREFIX}/bin/openssl"
+
+    [[ -x "$OPENSSL_BIN" ]] ||
+        die "OpenSSL executable not found: $OPENSSL_BIN"
+
+    local lib64="${KLL_OPENSSL_PREFIX}/lib64"
+    local lib="${KLL_OPENSSL_PREFIX}/lib"
+
+    OPENSSL_LD_LIBRARY_PATH=""
+
+    if [[ -d "$lib64" ]]; then
+        OPENSSL_LD_LIBRARY_PATH="$lib64"
+    fi
+
+    if [[ -d "$lib" ]]; then
+        if [[ -n "$OPENSSL_LD_LIBRARY_PATH" ]]; then
+            OPENSSL_LD_LIBRARY_PATH="${OPENSSL_LD_LIBRARY_PATH}:${lib}"
+        else
+            OPENSSL_LD_LIBRARY_PATH="$lib"
+        fi
+    fi
+
+    [[ -n "$OPENSSL_LD_LIBRARY_PATH" ]] ||
+        die "No lib/lib64 directory found under $KLL_OPENSSL_PREFIX"
+
+    echo
+    echo "==> Checking LMS-capable OpenSSL"
+
+    env \
+        LD_LIBRARY_PATH="${OPENSSL_LD_LIBRARY_PATH}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        "$OPENSSL_BIN" version -a \
+        > "$RESULT_DIR/setup/openssl-version.txt"
+
+    cat "$RESULT_DIR/setup/openssl-version.txt"
+}
+
+openssl_lms() {
+    env \
+        LD_LIBRARY_PATH="${OPENSSL_LD_LIBRARY_PATH}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        "$OPENSSL_BIN" "$@"
 }
 
 create_experiment() {
@@ -224,14 +279,66 @@ archive_bulletin_board() {
 
     [[ -s "$RESULT_DIR/setup/bulletin-board.json" ]] ||
         die "Archived BulletinBoard is empty"
+}
+
+export_public_key_pem() {
+    echo
+    echo "==> Exporting LMS public key for OpenSSL"
+
+    local public_key_hex
+
+    public_key_hex="$(
+        python3 - \
+            "$RESULT_DIR/setup/bulletin-board.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    board = json.load(f)
+
+public_key = board.get("lmsPublicKey")
+
+if not isinstance(public_key, str) or not public_key:
+    raise SystemExit("BulletinBoard does not contain a valid lmsPublicKey")
+
+print(public_key)
+PY
+    )"
+
+    compose --profile setup \
+        run --rm --no-deps \
+        --entrypoint java \
+        dealer \
+        -cp /app/app.jar \
+        es.uma.nicslab.hbs.util.ExportFromHex \
+        "$public_key_hex" \
+        /bulletin/lmspublickey.pem
+
+    compose exec -T trustee-0 \
+        cat /bulletin/lmspublickey.pem \
+        > "$RESULT_DIR/setup/lmspublickey.pem"
+
+    [[ -s "$RESULT_DIR/setup/lmspublickey.pem" ]] ||
+        die "Exported LMS public key PEM is empty"
+
+    openssl_lms pkey \
+        -pubin \
+        -in "$RESULT_DIR/setup/lmspublickey.pem" \
+        -text \
+        -noout \
+        > "$RESULT_DIR/setup/lmspublickey-openssl.txt" ||
+        die "Configured OpenSSL cannot parse exported LMS public key"
 
     (
-        cd "$RESULT_DIR/setup"
+    cd "$RESULT_DIR/setup"
         sha256sum \
             setup-config.json \
             bulletin-board.json \
+            lmspublickey.pem \
+            lmspublickey-openssl.txt \
+            openssl-version.txt \
             > SHA256SUMS
-    )
+)
 }
 
 wait_for_aggregator() {
@@ -291,7 +398,10 @@ finalize_setup_manifest() {
     python3 - \
         "$RESULT_DIR/manifest.json" \
         "$RESULT_DIR/setup/setup-config.json" \
-        "$RESULT_DIR/setup/bulletin-board.json" <<'PY'
+        "$RESULT_DIR/setup/bulletin-board.json" \
+        "$RESULT_DIR/setup/lmspublickey.pem" \
+        "$RESULT_DIR/setup/openssl-version.txt" \
+        "$KLL_OPENSSL_PREFIX" <<'PY'
 import hashlib
 import json
 import sys
@@ -300,6 +410,13 @@ from pathlib import Path
 manifest_path = Path(sys.argv[1])
 config_path = Path(sys.argv[2])
 board_path = Path(sys.argv[3])
+pem_path = Path(sys.argv[4])
+openssl_version_path = Path(sys.argv[5])
+openssl_prefix = sys.argv[6]
+
+openssl_version_text = openssl_version_path.read_text(
+    encoding="utf-8"
+).strip()
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -307,6 +424,7 @@ board = json.loads(board_path.read_text(encoding="utf-8"))
 
 config_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
 board_sha256 = hashlib.sha256(board_path.read_bytes()).hexdigest()
+pem_sha256 = hashlib.sha256(pem_path.read_bytes()).hexdigest()
 
 public_key = bytes.fromhex(board["lmsPublicKey"])
 public_key_sha256 = hashlib.sha256(public_key).hexdigest()
@@ -315,6 +433,7 @@ manifest["setup"] = {
     "setup_config_sha256": config_sha256,
     "bulletin_board_sha256": board_sha256,
     "lms_public_key_sha256": public_key_sha256,
+    "lms_public_key_pem_sha256": pem_sha256,
     "cl_cid": board["clCid"],
     "total_trustees": config["k"],
     "lms_params": config["lmsParams"],
@@ -328,6 +447,13 @@ manifest["deployment"] = {
 }
 
 manifest["experiment"]["status"] = "ready_for_signing"
+
+manifest["software"] = {
+    "openssl": {
+        "prefix": openssl_prefix,
+        "version_output": openssl_version_text,
+    }
+}
 
 manifest_path.write_text(
     json.dumps(manifest, indent=2, sort_keys=True) + "\n",
@@ -374,6 +500,7 @@ main() {
     cd "$REPO_ROOT"
 
     create_experiment "${1:-}"
+    configure_openssl
 
     fresh_deployment
     build_artifacts
@@ -383,6 +510,7 @@ main() {
     archive_setup_input
     run_dealer
     archive_bulletin_board
+    export_public_key_pem
 
     start_aggregator
     archive_deployment_snapshot
