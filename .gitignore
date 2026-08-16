@@ -40,3 +40,7 @@ build/
 cas-test/
 
 **/dependency-reduced-pom.xml
+
+# Network evaluation generated data
+/neteval/results/
+/neteval-metrics/
