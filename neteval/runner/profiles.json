@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "profile_id": "baseline",
+      "rtt_ms": 0
+    },
+    {
+      "profile_id": "rtt20",
+      "rtt_ms": 20
+    },
+    {
+      "profile_id": "rtt80",
+      "rtt_ms": 80
+    },
+    {
+      "profile_id": "rtt200",
+      "rtt_ms": 200
+    }
+  ]
+}
