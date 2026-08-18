@@ -21,7 +21,7 @@ KLL_BLOCKS="${KLL_BLOCKS:-5}"
 KLL_MEASURED_PER_BLOCK="${KLL_MEASURED_PER_BLOCK:-10}"
 KLL_PROFILE_SEED="${KLL_PROFILE_SEED:-20260817}"
 
-PROFILES_FILE="${REPO_ROOT}/neteval/runner/profiles.json"
+PROFILES_FILE="${KLL_PROFILES_FILE:-${REPO_ROOT}/neteval/runner/profiles.json}"
 
 OPENSSL_BIN=""
 OPENSSL_LD_LIBRARY_PATH=""
@@ -65,8 +65,9 @@ compose() {
 prepare_schedule() {
     echo
     echo "==> Preparing randomized block schedule"
-    echo "    seed:   $KLL_PROFILE_SEED"
-    echo "    blocks: $KLL_BLOCKS"
+    echo "    profiles: $PROFILES_FILE"
+    echo "    seed:     $KLL_PROFILE_SEED"
+    echo "    blocks:   $KLL_BLOCKS"
 
     SCHEDULE_FILE="$RESULT_DIR/schedule.json"
 
@@ -74,7 +75,8 @@ prepare_schedule() {
         "$PROFILES_FILE" \
         "$SCHEDULE_FILE" \
         "$KLL_PROFILE_SEED" \
-        "$KLL_BLOCKS" <<'PY'
+        "$KLL_BLOCKS" \
+        "$KLL_TRUSTEE_COUNT" <<'PY'
 import json
 import random
 import sys
@@ -84,12 +86,77 @@ profiles_path = Path(sys.argv[1])
 output_path = Path(sys.argv[2])
 seed = int(sys.argv[3])
 block_count = int(sys.argv[4])
+trustee_count = int(sys.argv[5])
 
 config = json.loads(
     profiles_path.read_text(encoding="utf-8")
 )
 
-profiles = config["profiles"]
+source_profiles = config["profiles"]
+
+if not source_profiles:
+    raise SystemExit("Profile file contains no profiles")
+
+profiles = []
+
+for profile in source_profiles:
+    profile_id = profile.get("profile_id")
+
+    if not isinstance(profile_id, str) or not profile_id:
+        raise SystemExit(f"Invalid profile_id: {profile_id!r}")
+
+    has_scalar = "rtt_ms" in profile
+    has_vector = "trustee_rtt_ms" in profile
+
+    if has_scalar == has_vector:
+        raise SystemExit(
+            f"{profile_id}: specify exactly one of "
+            "'rtt_ms' or 'trustee_rtt_ms'"
+        )
+
+    if has_scalar:
+        value = profile["rtt_ms"]
+
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or value < 0
+        ):
+            raise SystemExit(
+                f"{profile_id}: invalid rtt_ms={value!r}"
+            )
+
+        targets = [value] * trustee_count
+
+    else:
+        targets = profile["trustee_rtt_ms"]
+
+        if not isinstance(targets, list):
+            raise SystemExit(
+                f"{profile_id}: trustee_rtt_ms must be a list"
+            )
+
+        if len(targets) != trustee_count:
+            raise SystemExit(
+                f"{profile_id}: expected {trustee_count} RTT values, "
+                f"found {len(targets)}"
+            )
+
+        for index, value in enumerate(targets):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or value < 0
+            ):
+                raise SystemExit(
+                    f"{profile_id}: invalid RTT for trustee-{index}: "
+                    f"{value!r}"
+                )
+
+    normalized = dict(profile)
+    normalized["trustee_rtt_ms"] = targets
+
+    profiles.append(normalized)
 
 ids = [p["profile_id"] for p in profiles]
 
@@ -110,8 +177,9 @@ for block_id in range(1, block_count + 1):
     })
 
 result = {
-    "schema_version": 1,
+    "schema_version": 2,
     "seed": seed,
+    "trustee_count": trustee_count,
     "blocks": blocks,
 }
 
@@ -901,7 +969,7 @@ PY
 
 configure_network_profile() {
     local profile_id="$1"
-    local target_rtt_ms="$2"
+    local target_rtts_csv="$2"
     local block_id="$3"
 
     local block_label
@@ -912,26 +980,74 @@ configure_network_profile() {
 
     mkdir -p "$profile_dir"
 
+    local -a target_rtts=()
+
+    IFS=',' read -r -a target_rtts <<< "$target_rtts_csv"
+
+    (( ${#target_rtts[@]} == KLL_TRUSTEE_COUNT )) ||
+        die \
+            "$profile_id: expected $KLL_TRUSTEE_COUNT RTT targets, " \
+            "found ${#target_rtts[@]}"
+
     echo
     echo "==> Configuring network profile: $profile_id"
-    echo "    block:          $block_id"
-    echo "    configured RTT: ${target_rtt_ms} ms"
+    echo "    block: $block_id"
+    echo "    RTT targets:"
+
+    local i
+
+    : > "$profile_dir/rtt-targets.tsv"
+
+    for ((i = 0; i < ${#target_rtts[@]}; i++)); do
+
+        printf \
+            '    trustee-%d: %s ms\n' \
+            "$i" \
+            "${target_rtts[$i]}"
+
+        printf \
+            'trustee-%d\t%s\n' \
+            "$i" \
+            "${target_rtts[$i]}" \
+            >> "$profile_dir/rtt-targets.tsv"
+    done
+
+    local all_zero=false
+
+    if awk -F',' '
+        {
+            for (i = 1; i <= NF; i++) {
+                if (($i + 0) != 0) {
+                    exit 1
+                }
+            }
+            exit 0
+        }
+    ' <<< "$target_rtts_csv"
+    then
+        all_zero=true
+    fi
 
     sudo -v
 
-    if [[ "$target_rtt_ms" == "0" ]]; then
+    if [[ "$all_zero" == "true" ]]; then
+
         sudo "$NETEM_SCRIPT" reset \
             > "$profile_dir/configure.txt" 2>&1
+
     else
+
         sudo "$NETEM_SCRIPT" apply \
-            "$target_rtt_ms" \
+            "${target_rtts[@]}" \
             > "$profile_dir/configure.txt" 2>&1
+
     fi
 
     sudo "$NETEM_SCRIPT" show \
         > "$profile_dir/qdisc-before.txt" 2>&1
 
-    if [[ "$target_rtt_ms" == "0" ]]; then
+    if [[ "$all_zero" == "true" ]]; then
+
         if grep -q 'qdisc netem' \
             "$profile_dir/qdisc-before.txt"
         then
@@ -939,23 +1055,26 @@ configure_network_profile() {
                 "Baseline profile unexpectedly contains " \
                 "an active netem qdisc"
         fi
+
     else
+
         grep -q 'qdisc netem' \
             "$profile_dir/qdisc-before.txt" ||
             die \
                 "$profile_id does not contain active " \
                 "netem qdiscs"
+
     fi
 
     capture_profile_rtt \
         "$profile_id" \
-        "$target_rtt_ms" \
+        "$target_rtts_csv" \
         "$block_id"
 }
 
 capture_profile_rtt() {
     local profile_id="$1"
-    local target_rtt_ms="$2"
+    local target_rtts_csv="$2"
     local block_id="$3"
 
     echo
@@ -1025,10 +1144,26 @@ capture_profile_rtt() {
         } >> "$output"
     done
 
-    if [[ "$target_rtt_ms" != "0" ]]; then
+    local all_zero=false
+
+    if awk -F',' '
+        {
+            for (i = 1; i <= NF; i++) {
+                if (($i + 0) != 0) {
+                    exit 1
+                }
+            }
+            exit 0
+        }
+    ' <<< "$target_rtts_csv"
+    then
+        all_zero=true
+    fi
+
+    if [[ "$all_zero" != "true" ]]; then
         validate_rtt_profile \
             "$profile_id" \
-            "$target_rtt_ms" \
+            "$target_rtts_csv" \
             "$output"
     fi
 
@@ -1037,12 +1172,12 @@ capture_profile_rtt() {
 
 validate_rtt_profile() {
     local profile_id="$1"
-    local target_rtt_ms="$2"
+    local target_rtts_csv="$2"
     local rtt_file="$3"
 
     python3 - \
         "$profile_id" \
-        "$target_rtt_ms" \
+        "$target_rtts_csv" \
         "$rtt_file" <<'PY'
 import re
 import statistics
@@ -1050,7 +1185,10 @@ import sys
 from pathlib import Path
 
 profile_id = sys.argv[1]
-target = float(sys.argv[2])
+targets = [
+    float(value)
+    for value in sys.argv[2].split(",")
+]
 path = Path(sys.argv[3])
 
 text = path.read_text(encoding="utf-8")
@@ -1081,12 +1219,29 @@ for i in range(1, len(sections), 2):
             f"{trustee}, found {len(values)}"
         )
 
-    median = statistics.median(values)
-    results[trustee] = median
+    results[trustee] = statistics.median(values)
 
-tolerance = max(1.0, 0.05 * target)
+if len(results) != len(targets):
+    raise SystemExit(
+        f"{profile_id}: expected RTT data for {len(targets)} trustees, "
+        f"found {len(results)}"
+    )
 
-for trustee, median in sorted(results.items()):
+for trustee in sorted(
+    results,
+    key=lambda name: int(name.split("-")[1]),
+):
+    index = int(trustee.split("-")[1])
+
+    if index >= len(targets):
+        raise SystemExit(
+            f"{profile_id}: unexpected trustee index {index}"
+        )
+
+    target = targets[index]
+    median = results[trustee]
+
+    tolerance = max(1.0, 0.05 * target)
     error = abs(median - target)
 
     print(
@@ -1104,8 +1259,8 @@ for trustee, median in sorted(results.items()):
         )
 
 print(
-    f"    RTT validation passed "
-    f"(tolerance ±{tolerance:.3f} ms)"
+    "    RTT validation passed "
+    "(per-trustee tolerance = max(1 ms, 5% target))"
 )
 PY
 }
@@ -1205,13 +1360,23 @@ from pathlib import Path
 schedule = json.load(open(sys.argv[1], encoding="utf-8"))
 
 lines = []
+
 for block in schedule["blocks"]:
     block_id = block["block_id"]
+
     for profile in block["profiles"]:
+
+        targets = profile["trustee_rtt_ms"]
+
+        target_string = ",".join(
+            str(value)
+            for value in targets
+        )
+
         lines.append(
             f'{block_id}\t'
             f'{profile["profile_id"]}\t'
-            f'{profile["rtt_ms"]}'
+            f'{target_string}'
         )
 
 Path(sys.argv[2]).write_text(
@@ -1222,10 +1387,10 @@ PY
 
     local block_id
     local profile_id
-    local rtt_ms
+    local target_rtts_csv
 
     while IFS=$'\t' read -r \
-        block_id profile_id rtt_ms
+        block_id profile_id target_rtts_csv
     do
         echo
         echo "========================================"
@@ -1235,7 +1400,7 @@ PY
 
         configure_network_profile \
             "$profile_id" \
-            "$rtt_ms" \
+            "$target_rtts_csv" \
             "$block_id"
 
         run_profile_block \
@@ -1245,6 +1410,7 @@ PY
         capture_profile_final_state \
             "$profile_id" \
             "$block_id"
+
     done < "$schedule_tsv"
 }
 
@@ -1321,23 +1487,76 @@ block_ids = [block["block_id"] for block in blocks]
 if block_ids != list(range(1, len(blocks) + 1)):
     raise SystemExit(f"Unexpected block IDs in schedule: {block_ids}")
 
-first_profile_ids = [p["profile_id"] for p in blocks[0]["profiles"]]
+if schedule.get("trustee_count") != trustee_count:
+    raise SystemExit(
+        "Schedule trustee_count does not match setup: "
+        f'{schedule.get("trustee_count")} != {trustee_count}'
+    )
+
+first_profiles = blocks[0]["profiles"]
+
+first_profile_ids = [
+    p["profile_id"]
+    for p in first_profiles
+]
+
 if len(first_profile_ids) != len(set(first_profile_ids)):
     raise SystemExit("Duplicate profile IDs in first schedule block")
 
 expected_profile_set = set(first_profile_ids)
+
 profile_count = len(expected_profile_set)
+
 if profile_count == 0:
     raise SystemExit("Schedule contains no profiles")
 
+profile_targets = {}
+
+for profile in first_profiles:
+    profile_id = profile["profile_id"]
+    targets = profile.get("trustee_rtt_ms")
+
+    if not isinstance(targets, list):
+        raise SystemExit(
+            f"{profile_id}: schedule has no trustee_rtt_ms vector"
+        )
+
+    if len(targets) != trustee_count:
+        raise SystemExit(
+            f"{profile_id}: expected {trustee_count} RTT targets, "
+            f"found {len(targets)}"
+        )
+
+    profile_targets[profile_id] = targets
+
 for block in blocks:
-    profile_ids = [p["profile_id"] for p in block["profiles"]]
+    profile_ids = [
+        p["profile_id"]
+        for p in block["profiles"]
+    ]
+
     if set(profile_ids) != expected_profile_set:
         raise SystemExit(
-            f'Block {block["block_id"]}: profile set differs from first block'
+            f'Block {block["block_id"]}: '
+            "profile set differs from first block"
         )
+
     if len(profile_ids) != profile_count:
-        raise SystemExit(f'Block {block["block_id"]}: duplicate profile IDs')
+        raise SystemExit(
+            f'Block {block["block_id"]}: duplicate profile IDs'
+        )
+
+    for profile in block["profiles"]:
+        profile_id = profile["profile_id"]
+
+        if (
+            profile.get("trustee_rtt_ms")
+            != profile_targets[profile_id]
+        ):
+            raise SystemExit(
+                f'Block {block["block_id"]} profile={profile_id}: '
+                "RTT targets differ from first block"
+            )
 
 block_count = len(blocks)
 conditioning_count = block_count * profile_count
