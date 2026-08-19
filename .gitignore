@@ -48,3 +48,17 @@ cas-test/
 ### Python ###
 __pycache__/
 *.py[cod]
+
+### KLL runtime / experimental artifacts ###
+/neteval/results/
+/neteval-metrics/
+
+# Local campaign analysis / handoff artifacts
+/neteval/final-campaign-audit.txt
+/neteval/final-campaign-handoff/
+/neteval/kll-final-campaign-handoff.zip
+
+# Local LMS/OpenSSL verification artifacts
+/firma*.bin
+/message*.bin
+/lmspublickey.pem
