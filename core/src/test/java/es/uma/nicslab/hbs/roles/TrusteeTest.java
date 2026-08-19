@@ -1,184 +1,473 @@
 package es.uma.nicslab.hbs.roles;
 
-public class TrusteeTest {
+import es.uma.nicslab.hbs.lms.LMOtsParameters;
+import es.uma.nicslab.hbs.lms.LMSParameters;
+import es.uma.nicslab.hbs.lms.LMSSerializer;
+import es.uma.nicslab.hbs.lms.LMSigParameters;
+import es.uma.nicslab.hbs.lms.LMSSigner;
+import es.uma.nicslab.hbs.model.CRV;
+import es.uma.nicslab.hbs.model.Round1Msg;
+import es.uma.nicslab.hbs.model.Round2Msg;
+import es.uma.nicslab.hbs.model.SetupDealer;
+import es.uma.nicslab.hbs.model.ThresholdSignature;
+import es.uma.nicslab.hbs.protocol.InMemoryCAS;
+import es.uma.nicslab.hbs.protocol.InMemoryTrusteeState;
+import es.uma.nicslab.hbs.protocol.LocalTrusteeProxy;
+import es.uma.nicslab.hbs.protocol.TrusteeProxy;
+import es.uma.nicslab.hbs.util.ByteUtils;
 
-    /* private Trustee trustee;
-    private byte[] keyIdBytes;
-    private byte[] message;
-    private byte[] K;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.nio.charset.StandardCharsets;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class TrusteeTest {
+
+    private static final LMSParameters LMS_PARAMS = new LMSParameters(
+            LMSigParameters.lms_sha256_n32_h5,
+            LMOtsParameters.sha256_n32_w4
+    );
+
+    private static final int NUM_TRUSTEES = 3;
+    private static final int INDEX_LIMIT = 32;
+
+    private InMemoryCAS cas;
+    private SetupDealer setup;
+    private Trustee[] trustees;
     private int n;
-    private int chkLength;
-    private int pathLength;
-    private LMOtsParameters parameter;
-    private byte[] I;
-    private PublicBulletinBoard board;
 
     @BeforeEach
-    void setup() {
+    void setUp() throws Exception {
+        cas = new InMemoryCAS();
 
-        SecureRandom rng = new SecureRandom();
+        Dealer dealer = new Dealer(cas);
 
-        // Generar clave PRF del trustee
-        K = new byte[32];
-        rng.nextBytes(K);
-
-        // Parámetros LMS
-        LMSKeyGenerationParameters genParams = new LMSKeyGenerationParameters(
-                new LMSParameters(LMSigParameters.lms_sha256_n32_h5, LMOtsParameters.sha256_n32_w4),
-                rng
+        setup = dealer.setup(
+                NUM_TRUSTEES,
+                rotatingCoalitions(),
+                LMS_PARAMS
         );
-        LMSKeyPairGenerator gen = new LMSKeyPairGenerator();
-        gen.init(genParams);
-        AsymmetricCipherKeyPair keyPair = gen.generateKeyPair();
-        LMSPrivateKeyParameters lmsPrivate = (LMSPrivateKeyParameters) keyPair.getPrivate();
-        LMSPublicKeyParameters lmsPublic = (LMSPublicKeyParameters) keyPair.getPublic();
 
-        parameter = lmsPrivate.getOtsParameters();
-        I = lmsPrivate.getI();
-        n = parameter.getN();
+        trustees = new Trustee[NUM_TRUSTEES];
 
-        int keyId = lmsPrivate.getIndex();
-        keyIdBytes = ByteUtils.intToBytes(keyId);
-
-        chkLength = 2 * n; // k=2 trustees
-        pathLength = 5 * n; // h=5 nodos en el árbol Merkle
-
-        board = new PublicBulletinBoard(lmsPublic, parameter, I);
-
-        trustee = new Trustee(K, board);
-
-        message = "mensaje de prueba".getBytes();
-
-        int k = 2;
-
-        // Generar claves PRF de los trustees
-        byte[][] keys = new byte[k][32];
-        for (int t = 0; t < k; t++) {
-            rng.nextBytes(keys[t]);
+        for (int i = 0; i < NUM_TRUSTEES; i++) {
+            trustees[i] = newTrustee(
+                    setup,
+                    i,
+                    new InMemoryTrusteeState()
+            );
         }
 
-        // Obtener clave OTS y generar cadena SK completa
-        LMOtsPrivateKey otsPrivateKey = lmsPrivate.getCurrentOTSKey();
-        n = otsPrivateKey.getParameter().getN();
-
-        LMSContext context = lmsPrivate.generateLMSContext();
-        byte[][] PATH = context.getPath();
-
-        LMOtsChain chain = LM_OTS_WITH_CHAIN.lms_ots_generateChain(otsPrivateKey);
-        byte[][][] SK = chain.getSK();
-
-        byte[] R = new byte[n];
-        rng.nextBytes(R);
-
-        Dealer dealer = new Dealer(board);
-        dealer.KK_Setup(keys, keyIdBytes, SK, R, PATH);
+        n = setup.getLmsPublicKey()
+                .getOtsParameters()
+                .getN();
     }
 
     @Test
-    void testSign1DevuelveRound1MsgValido() {
-        Round1Msg msg = trustee.KK_Sign1(keyIdBytes, message);
-        assertNotNull(msg, "KK_Sign1 debe devolver Round1Msg");
-        assertNotNull(msg.getR_t(), "R_t no debe ser null");
-        assertNotNull(msg.getCHK_t(), "CHK_t no debe ser null");
-        assertEquals(n, msg.getR_t().length, "R_t debe tener n bytes");
-        assertEquals(chkLength, msg.getCHK_t().length, "CHK_t debe tener chkLength bytes");
+    void round1RejectsKeyIdOutsideTrusteeCoalition() throws Exception {
+        /*
+         * keyID=0 belongs to coalition {0,1}.
+         * Trustee 2 must therefore reject it.
+         */
+        Round1Msg result = trustees[2].shardSign1(
+                ByteUtils.intToBytes(0),
+                "message".getBytes(StandardCharsets.UTF_8)
+        );
+
+        assertNull(result);
     }
 
     @Test
-    void testSign1DevuelveNullSiYaHayFirmaEnCurso() {
-        trustee.KK_Sign1(keyIdBytes, message); // primera llamada — ok
-        Round1Msg msg = trustee.KK_Sign1(keyIdBytes, message); // segunda — ⊥
-        assertNull(msg, "KK_Sign1 debe devolver null si ya hay firma en curso");
+    void round1SucceedsForAssignedKeyId() throws Exception {
+        int keyID = 0;
+
+        Round1Msg result = trustees[0].shardSign1(
+                ByteUtils.intToBytes(keyID),
+                "message".getBytes(StandardCharsets.UTF_8)
+        );
+
+        assertNotNull(result);
+        assertNotNull(result.getR_t());
+        assertNotNull(result.getCHK_t());
+
+        assertEquals(n, result.getR_t().length);
+        assertEquals(
+                setup.getLengthCHK(),
+                result.getCHK_t().length
+        );
     }
 
     @Test
-    void testSign1EsDeterminista() {
-        // Dos trustees con la misma clave y keyId deben producir el mismo R_t y CHK_t
-        Trustee trustee2 = new Trustee(K, board);
-        Round1Msg msg1 = trustee.KK_Sign1(keyIdBytes, message);
-        Round1Msg msg2 = trustee2.KK_Sign1(keyIdBytes, message);
-        assertArrayEquals(msg1.getR_t(), msg2.getR_t(), "R_t debe ser determinista");
-        assertArrayEquals(msg1.getCHK_t(), msg2.getCHK_t(), "CHK_t debe ser determinista");
+    void round2WithoutPriorRound1ReturnsNull() throws Exception {
+        Round2Msg result = trustees[0].shardSign2(
+                ByteUtils.intToBytes(0),
+                new byte[n],
+                new byte[n]
+        );
+
+        assertNull(
+                result,
+                "Round 2 without a matching Round 1 must return null"
+        );
     }
 
     @Test
-    void testSign2DevuelveNullSinSign1Previo() {
-        // Sin llamar a KK_Sign1, current == null → ⊥
-        byte[] R = new byte[n];
-        new SecureRandom().nextBytes(R);
-        byte[] CHK = PRF.evalAUTH(K, keyIdBytes, R, n);
-        Round2Msg msg = trustee.KK_Sign2(R, CHK);
-        assertNull(msg, "KK_Sign2 debe devolver null si no se llamó antes a KK_Sign1");
+    void invalidChkIsRejectedAndConsumesRoundState() throws Exception {
+        int keyID = 0;
+        byte[] message =
+                "authenticated round".getBytes(StandardCharsets.UTF_8);
+
+        RoundContext context =
+                startTwoTrusteeRound(keyID, message);
+
+        byte[] invalidCHK =
+                context.chk()[0].clone();
+
+        invalidCHK[0] ^= 0x01;
+
+        Round2Msg rejected = trustees[0].shardSign2(
+                ByteUtils.intToBytes(keyID),
+                context.r(),
+                invalidCHK
+        );
+
+        assertNull(rejected);
+
+        /*
+         * KK_Sign2 performs an atomic load-and-clear before authentication.
+         * The same Round 1 state must therefore not be usable a second time,
+         * even if the second CHK is correct.
+         */
+        Round2Msg secondAttempt = trustees[0].shardSign2(
+                ByteUtils.intToBytes(keyID),
+                context.r(),
+                context.chk()[0]
+        );
+
+        assertNull(
+                secondAttempt,
+                "Round state must be consumed after the first Round 2 attempt"
+        );
     }
 
     @Test
-    void testSign2DevuelveNullSiKKAuthFalla() {
-        trustee.KK_Sign1(keyIdBytes, message);
+    void keyIdCannotBeReusedAfterCompletedSignature() throws Exception {
+        int keyID = 0;
 
-        // R incorrecto → KK_Auth fallará
-        byte[] wrongR = new byte[n];
-        new SecureRandom().nextBytes(wrongR);
-        byte[] wrongCHK = new byte[n]; // no corresponde a wrongR
-        new SecureRandom().nextBytes(wrongCHK);
+        RoundContext context = startTwoTrusteeRound(
+                keyID,
+                "first use".getBytes(StandardCharsets.UTF_8)
+        );
 
-        Round2Msg msg = trustee.KK_Sign2(wrongR, wrongCHK);
-        assertNull(msg, "KK_Sign2 debe devolver null si KK_Auth falla");
+        Round2Msg r2_0 = trustees[0].shardSign2(
+                ByteUtils.intToBytes(keyID),
+                context.r(),
+                context.chk()[0]
+        );
+
+        Round2Msg r2_1 = trustees[1].shardSign2(
+                ByteUtils.intToBytes(keyID),
+                context.r(),
+                context.chk()[1]
+        );
+
+        assertNotNull(r2_0);
+        assertNotNull(r2_1);
+
+        Round1Msg reuse = trustees[0].shardSign1(
+                ByteUtils.intToBytes(keyID),
+                "reuse".getBytes(StandardCharsets.UTF_8)
+        );
+
+        assertNull(
+                reuse,
+                "A consumed LMS KeyID must never become available again"
+        );
     }
 
     @Test
-    void testSign2NoReutilizaKeyIdTrasAuthFallida() {
-        trustee.KK_Sign1(keyIdBytes, message);
+    void differentKeyIdsCanBeInFlightConcurrently() throws Exception {
+        /*
+         * keyID=0 and keyID=3 both use coalition {0,1}.
+         * The production SQLite state is keyed by KeyID, so both
+         * signing operations may be between Round 1 and Round 2
+         * simultaneously.
+         */
 
-        // Auth falla — current se limpia igualmente
-        byte[] wrongR   = new byte[n];
-        byte[] wrongChk = new byte[n];
-        new SecureRandom().nextBytes(wrongR);
-        new SecureRandom().nextBytes(wrongChk);
-        trustee.KK_Sign2(wrongR, wrongChk);
+        int keyID0 = 0;
+        int keyID3 = 3;
 
-        // Intentar Sign1 de nuevo debe fallar porque current ya se usó
-        Round1Msg msg = trustee.KK_Sign1(keyIdBytes, message);
-        assertNull(msg, "KK_Sign1 no debe poder reutilizarse tras un intento fallido de KK_Sign2");
+        Round1Msg a0 = trustees[0].shardSign1(
+                ByteUtils.intToBytes(keyID0),
+                "message 0".getBytes(StandardCharsets.UTF_8)
+        );
+
+        Round1Msg b0 = trustees[1].shardSign1(
+                ByteUtils.intToBytes(keyID0),
+                "message 0".getBytes(StandardCharsets.UTF_8)
+        );
+
+        Round1Msg a3 = trustees[0].shardSign1(
+                ByteUtils.intToBytes(keyID3),
+                "message 3".getBytes(StandardCharsets.UTF_8)
+        );
+
+        Round1Msg b3 = trustees[1].shardSign1(
+                ByteUtils.intToBytes(keyID3),
+                "message 3".getBytes(StandardCharsets.UTF_8)
+        );
+
+        assertNotNull(a0);
+        assertNotNull(b0);
+        assertNotNull(a3);
+        assertNotNull(b3);
+
+        RoundContext context0 =
+                reconstructRound1(keyID0, a0, b0);
+
+        RoundContext context3 =
+                reconstructRound1(keyID3, a3, b3);
+
+        assertNotNull(
+                trustees[0].shardSign2(
+                        ByteUtils.intToBytes(keyID0),
+                        context0.r(),
+                        context0.chk()[0]
+                )
+        );
+
+        assertNotNull(
+                trustees[1].shardSign2(
+                        ByteUtils.intToBytes(keyID0),
+                        context0.r(),
+                        context0.chk()[1]
+                )
+        );
+
+        assertNotNull(
+                trustees[0].shardSign2(
+                        ByteUtils.intToBytes(keyID3),
+                        context3.r(),
+                        context3.chk()[0]
+                )
+        );
+
+        assertNotNull(
+                trustees[1].shardSign2(
+                        ByteUtils.intToBytes(keyID3),
+                        context3.r(),
+                        context3.chk()[1]
+                )
+        );
     }
 
     @Test
-    void testFlujoCompletoRound1Round2() {
-        // Round 1
-        Round1Msg round1 = trustee.KK_Sign1(keyIdBytes, message);
-        assertNotNull(round1);
+    void round1SharesAreDeterministicForSameTrusteeAndKeyId()
+            throws Exception {
 
-        // Aggregator reconstruye R (simulado: en 1-of-1 R = CRV.R ⊕ R_t)
-        byte[] R = round1.getR_t(); // simplificación para el test aislado
+        int keyID = 0;
 
-        // Aggregator calcula CHK'[t] = PRF^Auth_{K[t]}(KeyID, R)
-        byte[] CHK = PRF.evalAUTH(K, keyIdBytes, R, n);
+        Trustee duplicate = newTrustee(
+                setup,
+                0,
+                new InMemoryTrusteeState()
+        );
 
-        // Round 2
-        Round2Msg round2 = trustee.KK_Sign2(R, CHK);
+        byte[] message =
+                "determinism test".getBytes(StandardCharsets.UTF_8);
 
-        assertNotNull(round2, "El flujo completo debe producir un Round2Msg válido");
-        assertNotNull(round2.getZ_t(), "Z_t no debe ser null");
-        assertNotNull(round2.getPATH_t(), "PATH_t no debe ser null");
-        assertEquals(parameter.getP() * n, round2.getZ_t().length, "Z_t debe tener p*n bytes");
-        assertEquals(pathLength, round2.getPATH_t().length, "PATH_t debe tener pathLength bytes");
+        Round1Msg first = trustees[0].shardSign1(
+                ByteUtils.intToBytes(keyID),
+                message
+        );
+
+        Round1Msg second = duplicate.shardSign1(
+                ByteUtils.intToBytes(keyID),
+                message
+        );
+
+        assertNotNull(first);
+        assertNotNull(second);
+
+        assertArrayEquals(
+                first.getR_t(),
+                second.getR_t()
+        );
+
+        assertArrayEquals(
+                first.getCHK_t(),
+                second.getCHK_t()
+        );
     }
 
     @Test
-    void testSign2EsDeterminista() {
-        // Dos trustees con la misma clave deben producir el mismo Z_t y PATH_t
-        Trustee trustee2 = new Trustee(K, board);
+    void singleTrusteeCoalitionProducesValidLmsSignature()
+            throws Exception {
 
-        byte[] R = new byte[n];
-        new SecureRandom().nextBytes(R);
-        byte[] CHK = PRF.evalAUTH(K, keyIdBytes, R, n);
+        int[][] soloCoalitions =
+                new int[INDEX_LIMIT][];
 
-        trustee.KK_Sign1(keyIdBytes, message);
-        trustee2.KK_Sign1(keyIdBytes, message);
+        for (int keyID = 0; keyID < INDEX_LIMIT; keyID++) {
+            soloCoalitions[keyID] = new int[]{0};
+        }
 
-        Round2Msg msg1 = trustee.KK_Sign2(R, CHK);
-        Round2Msg msg2 = trustee2.KK_Sign2(R, CHK);
+        InMemoryCAS soloCas = new InMemoryCAS();
 
-        assertArrayEquals(msg1.getZ_t(), msg2.getZ_t(), "Z_t debe ser determinista");
-        assertArrayEquals(msg1.getPATH_t(), msg2.getPATH_t(), "PATH_t debe ser determinista");
-    } */
+        Dealer soloDealer = new Dealer(soloCas);
+
+        SetupDealer soloSetup = soloDealer.setup(
+                1,
+                soloCoalitions,
+                LMS_PARAMS
+        );
+
+        Trustee soloTrustee = newTrustee(
+                soloSetup,
+                0,
+                new InMemoryTrusteeState()
+        );
+
+        TrusteeProxy[] soloProxy = {
+                new LocalTrusteeProxy(soloTrustee)
+        };
+
+        Aggregator aggregator = new Aggregator(
+                soloSetup.getLmsPublicKey(),
+                soloCas,
+                soloSetup.getClCid()
+        );
+
+        int keyID = 0;
+
+        byte[] message =
+                "single trustee coalition"
+                        .getBytes(StandardCharsets.UTF_8);
+
+        ThresholdSignature signature =
+                aggregator.aggregatorSign(
+                        message,
+                        keyID,
+                        soloProxy
+                );
+
+        assertNotNull(signature);
+
+        byte[] serialized = LMSSerializer.serialize(
+                signature,
+                keyID,
+                soloSetup.getLmsPublicKey()
+        );
+
+        LMSSigner verifier = new LMSSigner();
+        verifier.init(false, soloSetup.getLmsPublicKey());
+
+        assertTrue(
+                verifier.verifySignature(
+                        message,
+                        serialized
+                )
+        );
+    }
+
+    private RoundContext startTwoTrusteeRound(
+            int keyID,
+            byte[] message
+    ) throws Exception {
+
+        Round1Msg first = trustees[0].shardSign1(
+                ByteUtils.intToBytes(keyID),
+                message
+        );
+
+        Round1Msg second = trustees[1].shardSign1(
+                ByteUtils.intToBytes(keyID),
+                message
+        );
+
+        assertNotNull(first);
+        assertNotNull(second);
+
+        return reconstructRound1(
+                keyID,
+                first,
+                second
+        );
+    }
+
+    private RoundContext reconstructRound1(
+            int keyID,
+            Round1Msg first,
+            Round1Msg second
+    ) {
+
+        CRV crv = cas.getCRV(
+                setup.getCl()[keyID].crvCid()
+        );
+
+        byte[] r = ByteUtils.xorAll(
+                crv.getR(),
+                new byte[][]{
+                        first.getR_t(),
+                        second.getR_t()
+                }
+        );
+
+        byte[] chkConcat = ByteUtils.xorAll(
+                crv.getCHK(),
+                new byte[][]{
+                        first.getCHK_t(),
+                        second.getCHK_t()
+                }
+        );
+
+        byte[][] chk =
+                ByteUtils.deconcat(chkConcat, n);
+
+        return new RoundContext(r, chk);
+    }
+
+    private static Trustee newTrustee(
+            SetupDealer setup,
+            int trusteeIndex,
+            InMemoryTrusteeState state
+    ) throws Exception {
+
+        Trustee trustee = new Trustee(
+                setup.getK()[trusteeIndex],
+                setup.getLmsPublicKey().getOtsParameters(),
+                setup.getLmsPublicKey().getI(),
+                setup.getLengthCHK(),
+                setup.getLengthPath(),
+                state
+        );
+
+        trustee.setup(
+                trusteeIndex,
+                setup.getCl()
+        );
+
+        return trustee;
+    }
+
+    private static int[][] rotatingCoalitions() {
+        int[][] coalitions = new int[INDEX_LIMIT][];
+
+        for (int keyID = 0; keyID < INDEX_LIMIT; keyID++) {
+            switch (keyID % 3) {
+                case 0 -> coalitions[keyID] = new int[]{0, 1};
+                case 1 -> coalitions[keyID] = new int[]{1, 2};
+                case 2 -> coalitions[keyID] = new int[]{0, 2};
+                default -> throw new IllegalStateException();
+            }
+        }
+
+        return coalitions;
+    }
+
+    private record RoundContext(
+            byte[] r,
+            byte[][] chk
+    ) {}
 }

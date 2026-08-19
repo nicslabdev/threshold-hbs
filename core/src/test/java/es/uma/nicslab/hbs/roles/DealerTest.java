@@ -1,143 +1,188 @@
 package es.uma.nicslab.hbs.roles;
 
-public class DealerTest {
+import es.uma.nicslab.hbs.lms.LMOtsParameters;
+import es.uma.nicslab.hbs.lms.LMSParameters;
+import es.uma.nicslab.hbs.lms.LMSigParameters;
+import es.uma.nicslab.hbs.model.CRV;
+import es.uma.nicslab.hbs.model.SetupDealer;
+import es.uma.nicslab.hbs.protocol.CoalitionEntry;
+import es.uma.nicslab.hbs.protocol.InMemoryCAS;
 
-    /* private byte[] R;
-    private byte[][] PATH;
-    private byte[][][] SK;
-    private byte[][] keys;
-    private int n;
-    private int k;
-    private byte[] keyIdBytes;
-    private PublicBulletinBoard board;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class DealerTest {
+
+    private static final LMSParameters LMS_PARAMS = new LMSParameters(
+            LMSigParameters.lms_sha256_n32_h5,
+            LMOtsParameters.sha256_n32_w4
+    );
+
+    private static final int NUM_TRUSTEES = 3;
+    private static final int INDEX_LIMIT = 32;
+
+    private InMemoryCAS cas;
+    private Dealer dealer;
 
     @BeforeEach
-    void setup() {
+    void setUp() {
+        cas = new InMemoryCAS();
+        dealer = new Dealer(cas);
+    }
 
-        SecureRandom rng = new SecureRandom();
-        k = 2;
+    @Test
+    void setupProducesExpectedPublicMaterial() throws Exception {
+        int[][] coalitions = validCoalitions();
 
-        // Generar claves PRF de los trustees
-        keys = new byte[k][32];
-        for (int t = 0; t < k; t++) {
-            rng.nextBytes(keys[t]);
-        }
-
-        // Generar par de claves LMS
-        LMSKeyGenerationParameters genParams = new LMSKeyGenerationParameters(
-                new LMSParameters(LMSigParameters.lms_sha256_n32_h5, LMOtsParameters.sha256_n32_w4),
-                rng
+        SetupDealer setup = dealer.setup(
+                NUM_TRUSTEES,
+                coalitions,
+                LMS_PARAMS
         );
-        LMSKeyPairGenerator gen = new LMSKeyPairGenerator();
-        gen.init(genParams);
-        AsymmetricCipherKeyPair keyPair = gen.generateKeyPair();
-        LMSPrivateKeyParameters lmsPrivate = (LMSPrivateKeyParameters) keyPair.getPrivate();
-        LMSPublicKeyParameters lmsPublic = (LMSPublicKeyParameters) keyPair.getPublic();
 
-        LMOtsParameters parameter = lmsPrivate.getOtsParameters();
-        byte[] I = lmsPrivate.getI();
+        assertNotNull(setup);
+        assertNotNull(setup.getLmsPublicKey());
+        assertNotNull(setup.getClCid());
 
-        int keyId = lmsPrivate.getIndex();
-        keyIdBytes = ByteUtils.intToBytes(keyId);
+        assertEquals(NUM_TRUSTEES, setup.getK().length);
+        assertEquals(INDEX_LIMIT, setup.getCl().length);
 
-        // Obtener clave OTS y generar cadena SK completa
-        LMOtsPrivateKey otsPrivateKey = lmsPrivate.getCurrentOTSKey();
-        n = otsPrivateKey.getParameter().getN();
+        CoalitionEntry[] storedCL =
+                cas.getCL(setup.getClCid());
 
-        LMSContext context = lmsPrivate.generateLMSContext();
-        PATH = context.getPath();
-
-        LMOtsChain chain = LM_OTS_WITH_CHAIN.lms_ots_generateChain(otsPrivateKey);
-        SK = chain.getSK();
-
-        R = new byte[n];
-        rng.nextBytes(R);
-
-        board = new PublicBulletinBoard(lmsPublic, parameter, I);
-
-        Dealer dealer = new Dealer(board);
-        dealer.KK_Setup(keys, keyIdBytes, SK, R, PATH);
-
-        CRV CRV = board.getCRV();
-
-        // System.out.println(CRV.toString());
+        assertEquals(INDEX_LIMIT, storedCL.length);
     }
 
     @Test
-    void testRReconstructed() {
-        // sharesR[t] = PRF^R_{K[t]}(KeyID, n)
-        byte[][] sharesR = new byte[k][];
-        for (int t = 0; t < k; t++) {
-            sharesR[t] = PRF.evalR(keys[t], keyIdBytes, n);
-        }
+    void crvDimensionsMatchLmsParameters() throws Exception {
+        SetupDealer setup = dealer.setup(
+                NUM_TRUSTEES,
+                validCoalitions(),
+                LMS_PARAMS
+        );
 
-        // CRV.R ⊕ sharesR[0] ⊕ ... ⊕ sharesR[k-1] == R original
-        byte[] reconstructed = ByteUtils.xorAll(board.getCRV().getR(), sharesR);
-        assertArrayEquals(R, reconstructed, "R no se reconstruye correctamente");
+        LMOtsParameters ots =
+                setup.getLmsPublicKey().getOtsParameters();
+
+        int n = ots.getN();
+        int p = ots.getP();
+        int steps = 1 << ots.getW();
+
+        CoalitionEntry entry = setup.getCl()[0];
+        CRV crv = cas.getCRV(entry.crvCid());
+
+        int coalitionSize = entry.trustees().length;
+
+        assertEquals(n, crv.getR().length);
+        assertEquals(coalitionSize * n, crv.getCHK().length);
+        assertEquals(5 * n, crv.getPATH().length);
+
+        assertEquals(
+                crv.getCHK().length,
+                setup.getLengthCHK()
+        );
+
+        assertEquals(
+                crv.getPATH().length,
+                setup.getLengthPath()
+        );
+
+        byte[][][] sk = crv.getSK();
+
+        assertEquals(p, sk.length);
+        assertEquals(steps, sk[0].length);
+        assertEquals(n, sk[0][0].length);
     }
 
     @Test
-    void testCHKReconstructed() {
-        // CHK[t] = PRF^Auth_{K[t]}(KeyID, R, n)
-        byte[][] CHK = new byte[k][];
-        for (int t = 0; t < k; t++) {
-            CHK[t] = PRF.evalAUTH(keys[t], keyIdBytes, R, n);
-        }
-        byte[] CHKconcat = ByteUtils.concat(CHK);
+    void coalitionListPreservesConfiguredCoalitions() throws Exception {
+        int[][] coalitions = validCoalitions();
 
-        // sharesCHK[t] = PRF^CHK_{K[t]}(KeyID, |CHKconcat|)
-        byte[][] sharesCHK = new byte[k][];
-        for (int t = 0; t < k; t++) {
-            sharesCHK[t] = PRF.evalCHK(keys[t], keyIdBytes, CHKconcat.length);
-        }
+        SetupDealer setup = dealer.setup(
+                NUM_TRUSTEES,
+                coalitions,
+                LMS_PARAMS
+        );
 
-        // CRV.CHK ⊕ sharesCHK[0] ⊕ ... ⊕ sharesCHK[k-1] == CHKconcat original
-        byte[] reconstructed = ByteUtils.xorAll(board.getCRV().getCHK(), sharesCHK);
-        assertArrayEquals(CHKconcat, reconstructed, "CHK no se reconstruye correctamente");
+        CoalitionEntry[] stored =
+                cas.getCL(setup.getClCid());
+
+        for (int keyID = 0; keyID < INDEX_LIMIT; keyID++) {
+            assertArrayEquals(
+                    coalitions[keyID],
+                    stored[keyID].trustees(),
+                    "Unexpected coalition for keyID=" + keyID
+            );
+        }
     }
 
     @Test
-    void testPATHReconstructed() {
-        byte[] PATHconcat = ByteUtils.concat(PATH);
+    void setupRejectsCoalitionListWithWrongLength() {
+        int[][] invalid = new int[16][];
 
-        // sharesPATH[t] = PRF^PATH_{K[t]}(KeyID, |PATHconcat|)
-        byte[][] sharesPATH = new byte[k][];
-        for (int t = 0; t < k; t++) {
-            sharesPATH[t] = PRF.evalPATH(keys[t], keyIdBytes, PATHconcat.length);
-        }
-
-        // CRV.PATH ⊕ sharesPATH[0] ⊕ ... ⊕ sharesPATH[k-1] == PATHconcat original
-        byte[] reconstructed = ByteUtils.xorAll(board.getCRV().getPATH(), sharesPATH);
-        assertArrayEquals(PATHconcat, reconstructed, "PATH no se reconstruye correctamente");
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> dealer.setup(
+                        NUM_TRUSTEES,
+                        invalid,
+                        LMS_PARAMS
+                )
+        );
     }
 
     @Test
-    void testSKReconstructed() {
-        int chains = SK.length;
-        int steps  = SK[0].length;
+    void setupRejectsTrusteeIndexOutOfBounds() {
+        int[][] coalitions = validCoalitions();
 
-        // sharesSK[t][i][j] = PRF^Chain_{K[t]}(KeyID, i, j, n)
-        byte[][][][] sharesSK = new byte[k][chains][steps][];
-        for (int t = 0; t < k; t++) {
-            for (int i = 0; i < chains; i++) {
-                for (int j = 0; j < steps; j++) {
-                    sharesSK[t][i][j] = PRF.evalCHAIN(keys[t], keyIdBytes, i, j, n);
-                }
+        coalitions[0] =
+                new int[]{0, NUM_TRUSTEES + 1};
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> dealer.setup(
+                        NUM_TRUSTEES,
+                        coalitions,
+                        LMS_PARAMS
+                )
+        );
+    }
+
+    @Test
+    void allPublishedCrvsAreRetrievableFromCas() throws Exception {
+        SetupDealer setup = dealer.setup(
+                NUM_TRUSTEES,
+                validCoalitions(),
+                LMS_PARAMS
+        );
+
+        for (int keyID = 0; keyID < INDEX_LIMIT; keyID++) {
+            CoalitionEntry entry = setup.getCl()[keyID];
+
+            assertNotNull(entry.crvCid());
+
+            CRV crv = cas.getCRV(entry.crvCid());
+
+            assertNotNull(
+                    crv,
+                    "Missing CRV for keyID=" + keyID
+            );
+        }
+    }
+
+    private static int[][] validCoalitions() {
+        int[][] coalitions = new int[INDEX_LIMIT][];
+
+        for (int keyID = 0; keyID < INDEX_LIMIT; keyID++) {
+            switch (keyID % 3) {
+                case 0 -> coalitions[keyID] = new int[]{0, 1};
+                case 1 -> coalitions[keyID] = new int[]{1, 2};
+                case 2 -> coalitions[keyID] = new int[]{0, 2};
+                default -> throw new IllegalStateException();
             }
         }
 
-        // Para cada (i,j): CRV.SK[i][j] ⊕ sharesSK[0][i][j] ⊕ ... ⊕ sharesSK[k-1][i][j] == SK[i][j] original
-        byte[][][] crvSK = board.getCRV().getSK();
-        for (int i = 0; i < chains; i++) {
-            for (int j = 0; j < steps; j++) {
-                byte[] reconstructed = crvSK[i][j].clone();
-                for (int t = 0; t < k; t++) {
-                    reconstructed = ByteUtils.xorBytes(reconstructed, sharesSK[t][i][j]);
-                }
-                assertArrayEquals(SK[i][j], reconstructed,
-                        "SK[" + i + "][" + j + "] no se reconstruye correctamente");
-            }
-        }
-    } */
-
+        return coalitions;
+    }
 }

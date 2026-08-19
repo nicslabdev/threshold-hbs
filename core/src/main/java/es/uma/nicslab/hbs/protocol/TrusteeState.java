@@ -15,8 +15,10 @@ import es.uma.nicslab.hbs.protocol.SigningState;
  *
  * 2. SigningState — estado entre Round1 y Round2.
  *    Cuando el Trustee acepta una firma en Round1, guarda el keyID
- *    y el mensaje en curso. Round2 los recupera y los borra en una
- *    sola operación atómica.
+ *    y el mensaje en curso. El estado se mantiene de forma independiente
+ *    por KeyID, por lo que pueden existir varias firmas concurrentes para
+ *    KeyIDs distintos. Round2 recupera y borra atómicamente el estado
+ *    correspondiente al KeyID solicitado.
  *
  * Implementaciones:
  *  - InMemoryTrusteeStateStore → tests unitarios de core
@@ -47,7 +49,7 @@ public interface TrusteeState {
 
     /**
      * Guarda el estado entre Round1 y Round2.
-     * Solo puede haber un estado activo a la vez.
+     * Puede existir como máximo un estado activo por KeyID.
      *
      * @param keyID   KeyID en curso (bytes).
      * @param message Mensaje a firmar.
@@ -66,7 +68,7 @@ public interface TrusteeState {
     SigningState loadAndClearSigningState(int keyID) throws Exception;
 
     /**
-     * Indica si hay una firma en curso (estado entre Round1 y Round2).
+     * Indica si hay una firma en curso para el KeyID indicado.
      */
     boolean hasSigningState(int keyID) throws Exception;
 
