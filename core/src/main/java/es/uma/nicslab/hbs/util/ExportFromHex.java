@@ -36,6 +36,6 @@ public class ExportFromHex {
                 outputPath
         );
 
-        System.out.println("Exportado correctamente.");
+        System.out.println("Public key exported successfully.");
     }
 }

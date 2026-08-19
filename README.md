@@ -1,23 +1,163 @@
 # Threshold Hash-Based Signatures — Distributed Implementation
 
-Java implementation of the threshold signature scheme over LMS described in:
+Java implementation of the threshold/distributed LMS construction described in:
 
-> **"Turning Hash-Based Signatures into Distributed Signatures and Threshold Signatures"**  
-> John Kelsey, Nathalie Lang, Stefan Lucks — IACR Communications in Cryptology, Vol. 2, No. 2, 2025
+> **John Kelsey, Nathalie Lang, and Stefan Lucks, _Turning Hash-Based Signatures into Distributed Signatures and Threshold Signatures: Delegate Your Signing Capability, and Distribute it Among Trustees_.**
+> IACR Communications in Cryptology, Vol. 2, No. 2, 2025.
+> DOI: https://doi.org/10.62056/a6ksudy6b
 
-The system transforms the LMS hash-based signature scheme (RFC 8554) into a distributed signing scheme in which multiple Trustees cooperate to produce valid signatures. The resulting signature is indistinguishable from a standard LMS signature and can be verified by any compatible LMS verifier, including OpenSSL.
+The implementation transforms LMS/LM-OTS (RFC 8554) signing into a two-round protocol in which a coalition of Trustees cooperates to produce a signature serialized in the standard LMS format. Generated signatures are verified with the LMS implementation in Bouncy Castle and, in the distributed evaluation, independently with OpenSSL 4.
+
+The repository contains both the cryptographic implementation and a deployable distributed system with a Dealer, Trustees, an Aggregator, and a content-addressable store (CAS).
+
+---
+
+## Reproducing the Artifact
+
+The repository exposes four complementary entry points:
+
+| Goal                                        | Entry point                              |
+| ------------------------------------------- | ---------------------------------------- |
+| Build and validate correctness              | `mvn clean test`                         |
+| Run the local cryptographic benchmark       | [`bench/README.md`](bench/README.md)     |
+| Run the distributed implementation          | [Deployment](#deployment)                |
+| Reproduce the controlled network evaluation | [`neteval/README.md`](neteval/README.md) |
+
+### Build and test
+
+Requirements for the Java build:
+
+- JDK 17
+- Maven 3.8+
+
+Run the complete Maven reactor from the repository root:
+
+```bash
+mvn clean test
+```
+
+At artifact finalization, this command executed **103 tests with 0 failures, 0 errors, and 0 skipped tests**, including:
+
+- 39 `core` tests covering serialization, bulletin-board handling, Trustee state, Dealer setup, Trustee behavior, Aggregator behavior, LMS verification, negative verification cases, and one-time KeyID enforcement;
+- 33 CAS tests;
+- 22 Trustee-server tests, including SQLite-backed state;
+- 9 end-to-end integration tests.
+
+### Local benchmark
+
+A short functional check of the local benchmark can be run with:
+
+```bash
+mvn -pl core -DskipTests exec:java \
+  -Dexec.mainClass=es.uma.nicslab.hbs.bench.Benchmark \
+  -Dexec.args="--smoke"
+```
+
+The full benchmark is:
+
+```bash
+mvn -pl core -DskipTests exec:java \
+  -Dexec.mainClass=es.uma.nicslab.hbs.bench.Benchmark
+```
+
+It measures local Dealer setup cost, threshold signing, LMS verification, and a plain LMS baseline without network effects. The full methodology, parameter matrix, historical output used for the paper, and the distinction from the distributed evaluation are documented in [`bench/README.md`](bench/README.md).
+
+### Distributed implementation
+
+The Docker deployment uses real HTTP/gRPC communication, persistent Trustee state, and an external CAS. See [Deployment](#deployment) below for the basic signing workflow.
+
+### Network evaluation
+
+The reproducible network-evaluation harness under [`neteval/`](neteval/README.md) drives Docker deployments with 3, 5, or 10 Trustees and applies controlled Aggregator–Trustee RTTs using Linux `tc`/`netem`. It includes homogeneous and heterogeneous RTT profiles, randomized experimental blocks, warm-up and conditioning runs, metrics collection, one-time KeyID allocation, and independent OpenSSL verification.
 
 ---
 
 ## Main Features
 
-- Implementation of the two-round distributed signing protocol (Algorithms 5–11 of the paper)
-- Independent Docker containers for each protocol role
-- Aggregator–Trustee communication over gRPC (Protocol Buffers)
-- Custom Content Addressable Storage (CAS) for CRVs and the Coalition List
+- Two-round distributed LMS signing protocol based on the Kelsey–Lang–Lucks construction
+- Coalition assignment per LMS KeyID
+- Standard RFC 8554 signature serialization
+- Bouncy Castle LMS verification and independent OpenSSL 4 interoperability checks
+- Independent Docker containers for the protocol roles
+- Aggregator–Trustee communication over gRPC and Protocol Buffers
+- Custom content-addressable storage for CRVs and the Coalition List
 - Persistent Trustee state using SQLite
-- Threshold-signature verification with OpenSSL, validated experimentally
-- Reproducible evaluation under controlled RTT using Linux `tc`/`netem`, including 3-, 5-, and 10-Trustee topologies and both homogeneous and heterogeneous network profiles
+- Atomic one-time KeyID consumption
+- Concurrent Trustee RPCs within each distributed signing round, with a strict barrier between Round 1 and Round 2
+- Reproducible network evaluation under controlled homogeneous and heterogeneous RTTs
+
+---
+
+## Protocol Overview
+
+### Roles
+
+| Role           | Responsibility                                               | Secret material                |
+| -------------- | ------------------------------------------------------------ | ------------------------------ |
+| **Dealer**     | Generates the LMS key pair, per-Trustee PRF keys, CRVs, and Coalition List during setup. It distributes each `K[t]` to its Trustee and then terminates. | All `K[t]` values during setup |
+| **Trustee**    | Participates in the two signing rounds for the KeyIDs assigned to it and persistently enforces one-time KeyID use. | Its own PRF key `K[t]`         |
+| **Aggregator** | Selects the coalition fixed by the Coalition List, coordinates the two rounds, reconstructs the LMS signature, and returns its RFC 8554 serialization. | No Trustee PRF key             |
+| **CAS**        | Stores CRVs and the Coalition List as content-addressed public objects. | None                           |
+
+### Two-round signing flow
+
+For a KeyID with coalition `C`:
+
+```text
+                  Round 1
+Aggregator  --------------------->  Trustees in C
+            (KeyID, message)
+
+Aggregator  <---------------------  Trustees in C
+              (R_t, CHK_t)
+
+            reconstruct R and CHK
+                    |
+                    | strict barrier
+                    v
+
+                  Round 2
+Aggregator  --------------------->  Trustees in C
+              (KeyID, R, CHK[t])
+
+Aggregator  <---------------------  Trustees in C
+              (Z_t, PATH_t)
+
+        reconstruct (R, PATH, Z)
+                    |
+                    v
+          RFC 8554 LMS signature
+```
+
+Within each round, the distributed Aggregator issues the required Trustee calls concurrently. Round 2 starts only after all required Round 1 responses have completed and `R` and `CHK` have been reconstructed.
+
+If any required Trustee returns `⊥` (`null`) in either round, the signing attempt aborts.
+
+### Coalition List and one-time state
+
+The Dealer creates one `CoalitionEntry` per LMS KeyID. Each entry contains:
+
+- the indices of the Trustees authorized for that KeyID; and
+- the CID of the corresponding CRV in the CAS.
+
+A Trustee receives the Coalition List during setup and derives the KeyIDs assigned to it. Claiming a KeyID is atomic and irreversible: once a signing attempt begins with that KeyID, the KeyID cannot be reused.
+
+Signing state between Round 1 and Round 2 is maintained independently per KeyID. Multiple distinct KeyIDs may therefore be in flight concurrently, while each individual KeyID remains one-time.
+
+### CRV and domain-separated PRF
+
+For each KeyID, the public CRV contains the LMS signing material XOR-masked with Trustee-derived shares:
+
+| Field  | Content                                                      |
+| ------ | ------------------------------------------------------------ |
+| `R`    | LMS randomizer masked with the Trustees' `R_t` shares        |
+| `CHK`  | Concatenated Round-2 authentication values masked with Trustee shares |
+| `PATH` | Merkle authentication path masked with Trustee shares        |
+| `SK`   | LM-OTS chain material masked with Trustee shares             |
+
+Trustee shares are deterministically derived from each Trustee's secret `K[t]` using KMAC-256 with domain-separated invocations for `R`, `CHAIN`, `CHK`, `PATH`, and `AUTH`.
+
+The `AUTH` value binds Round 2 to the randomizer reconstructed after Round 1: before producing its Round-2 share, each Trustee checks the received `CHK[t]` against `PRF^AUTH_{K[t]}(KeyID, R, n)`.
 
 ---
 
@@ -44,93 +184,95 @@ The system transforms the LMS hash-based signature scheme (RFC 8554) into a dist
 Shared volume: /bulletin/board.json ← written by Dealer, read by Trustees and Aggregator
 ```
 
-### Protocol Roles
+### Deployment roles
 
-**Dealer** — ephemeral container that performs setup:
+**Dealer** — ephemeral process that performs setup:
 
-1. Generates the LMS key pair and the PRF keys `K[t]` for each Trustee
-2. Generates the CRVs (Common Reference Values) and publishes them to the CAS
-3. Publishes the Coalition List (CL) to the CAS
-4. Writes the BulletinBoard containing the LMS public key and the corresponding CIDs
-5. Distributes `K[t]` to each Trustee over gRPC and terminates
+1. Generates the LMS key pair and PRF keys `K[t]`.
+2. Generates the CRVs and publishes them to the CAS.
+3. Publishes the Coalition List to the CAS.
+4. Writes the BulletinBoard containing the LMS public key and associated CIDs.
+5. Distributes `K[t]` to the corresponding Trustees over gRPC and terminates.
 
-**Trustees** — gRPC servers participating in the signing protocol. Each Trustee:
+**Trustees** — gRPC servers that:
 
-- Stores its PRF key `K[t]` on disk as secret material
-- Maintains the list of available KeyIDs persistently in SQLite
-- Participates in the two signing rounds coordinated by the Aggregator
-- Never reuses a KeyID, preserving the one-time property required by LMS
+- store their PRF key `K[t]`;
+- maintain available KeyIDs and between-round state persistently in SQLite;
+- participate in the two signing rounds;
+- reject KeyIDs that are not assigned or have already been consumed.
 
-**Aggregator** — HTTP server coordinating the signing protocol:
+**Aggregator** — HTTP server that:
 
-- Receives external `POST /sign/{keyID}` requests
-- Retrieves the corresponding CRV from the CAS
-- Executes the two protocol rounds with the Trustees over gRPC
-- Reconstructs the complete `(R, PATH, Z)` signature and returns it in RFC 8554 format
+- accepts `POST /sign/{keyID}`;
+- reads the Coalition List and CRV from the CAS;
+- executes the two protocol rounds with the required Trustees;
+- reconstructs `(R, PATH, Z)`;
+- serializes and returns the resulting LMS signature.
 
-**CAS** — content-addressable HTTP storage service:
+**CAS** — content-addressable HTTP storage that:
 
-- Stores blobs identified by their SHA-256 digest (CID)
-- Endpoints: `POST /blobs` → CID, `GET /blobs/{cid}` → bytes
-- Automatically verifies content integrity on retrieval
+- stores blobs identified by their SHA-256 digest;
+- exposes `POST /blobs` and `GET /blobs/{cid}`;
+- validates content integrity when objects are retrieved.
 
 ---
 
-## Project Structure (Maven Multi-Module)
+## Project Structure
 
 ```text
 threshold-hbs/
-├── core/                    Pure cryptographic logic (no network or disk I/O)
+├── core/                    Cryptographic and protocol logic
 │   └── src/main/java/es/uma/nicslab/hbs/
-│       ├── lms/             LMS/LM-OTS classes (extended BouncyCastle)
-│       ├── model/           CRV, SetupDealer, ThresholdSignature, Round1Msg, Round2Msg
-│       ├── protocol/        Protocol interfaces and classes:
-│       │                    BulletinBoard, CASReader, CASWriter, CRVSerializer,
-│       │                    CLSerializer, CoalitionEntry, TrusteeProxy,
-│       │                    LocalTrusteeProxy, InMemoryCAS, TrusteeState,
-│       │                    InMemoryTrusteeState, SigningState, ProtocolRunner
+│       ├── bench/           Local in-process benchmark
+│       ├── lms/             LMS/LM-OTS classes (extended Bouncy Castle code)
+│       ├── model/           CRV, SetupDealer, ThresholdSignature, round messages
+│       ├── protocol/        CAS abstractions, CoalitionEntry, TrusteeProxy,
+│       │                    BulletinBoard, in-memory state, ProtocolRunner
 │       ├── roles/           Dealer, Trustee, Aggregator
-│       └── util/            PRF, ByteUtils, LMSExporterOpenSSL, ExportFromHex
+│       └── util/            PRF, ByteUtils, LMS/OpenSSL utilities
 │
 ├── proto/                   gRPC contracts
-│   └── trustee.proto
+│   └── src/main/proto/trustee.proto
 │
-├── cas/                     HTTP CAS server (Javalin 5.6.3)
-│   └── CASServer, BlobStore, CASClient, HttpCASReader, HttpCASWriter
-│
-├── trustee-server/          Trustee gRPC server
-│   └── TrusteeGrpcServer, TrusteeServiceImpl, TrusteeConfig, SQLiteTrusteeState
-│
-├── aggregator-server/       Aggregator HTTP server
-│   └── AggregatorServer, GrpcTrusteeProxy
-│
-├── dealer-cli/              Dealer CLI (ephemeral container)
-│   └── DealerMain, SetupConfig
-│
-├── neteval/                 Reproducible network-evaluation infrastructure
-│   ├── netem/               Aggregator ↔ Trustee emulation with tc/netem
-│   ├── runner/              Runner, profiles, and safe KeyID management
-│   └── README.md            Experimental methodology and campaigns
-│
+├── cas/                     HTTP CAS server and client
+├── trustee-server/          Trustee gRPC server and SQLite state
+├── aggregator-server/       Aggregator HTTP server and gRPC Trustee proxy
+├── dealer-cli/              Ephemeral distributed setup client
 ├── integration-tests/       End-to-end integration tests
+│
+├── bench/
+│   ├── README.md            Local benchmark methodology and reproduction
+│   └── results/
+│       └── local-benchmark-2026-08-07.txt
+│
+├── neteval/
+│   ├── README.md            Distributed network-evaluation methodology
+│   ├── netem/               Selective Aggregator ↔ Trustee tc/netem shaping
+│   └── runner/              Campaign runner, profiles, and KeyID management
+│
 ├── docker-compose.yml
-└── setup-config.json
+├── docker-compose.metrics.yml
+├── setup-config.json
+├── pom.xml
+└── README.md
 ```
 
 ---
 
 ## Technologies
 
-| Component     | Technology                               |
-| ------------- | ---------------------------------------- |
-| Language      | Java 17                                  |
-| Build system  | Maven (multi-module)                     |
-| Cryptography  | BouncyCastle 1.84, RFC 8554 (LMS/LM-OTS) |
-| Communication | gRPC 1.75.0 + Protocol Buffers           |
-| HTTP server   | Javalin 5.6.3 (CAS and Aggregator)       |
-| Persistence   | SQLite (sqlite-jdbc 3.46.0)              |
-| Containers    | Docker + Docker Compose                  |
-| Base image    | eclipse-temurin:17-jre-alpine            |
+| Component                 | Technology                                |
+| ------------------------- | ----------------------------------------- |
+| Language                  | Java 17                                   |
+| Build system              | Maven multi-module                        |
+| Cryptography              | Bouncy Castle 1.84; LMS/LM-OTS (RFC 8554) |
+| Trustee RPC               | gRPC 1.75.0 + Protocol Buffers            |
+| HTTP services             | Javalin 5.6.3                             |
+| Persistence               | SQLite (`sqlite-jdbc` 3.46.0)             |
+| Containers                | Docker + Docker Compose                   |
+| Container Java runtime    | `eclipse-temurin:17-jre-alpine`           |
+| Network emulation         | Linux `tc` / `netem`                      |
+| External LMS verification | OpenSSL 4                                 |
 
 ---
 
@@ -148,22 +290,24 @@ message Sign1Request { int32 key_id = 1; bytes message = 2; int32 n = 3; }
 message Sign2Request { int32 key_id = 1; bytes r = 2; bytes chk_i = 3; }
 ```
 
-`Setup` only transports the secret PRF key `K[t]`. The remaining scheme parameters (LMS public key, field lengths, and Coalition List CID) are read by each Trustee from the shared BulletinBoard.
+`Setup` transports the secret PRF key `K[t]`. The remaining public scheme parameters are obtained from the shared BulletinBoard and CAS.
 
 ---
 
 ## BulletinBoard
 
-Public JSON file written by the Dealer after setup and shared through a Docker volume:
+The Dealer writes a public JSON file to the shared Docker volume:
 
 ```json
 {
   "lmsPublicKey": "3082...hex...",
-  "clCid":        "a3f8b2...64chars...",
-  "lengthCHK":    x,
-  "lengthPATH":   y
+  "clCid": "a3f8b2...64chars...",
+  "lengthCHK": 192,
+  "lengthPATH": 160
 }
 ```
+
+The concrete field lengths depend on the selected LMS/LM-OTS parameters and coalition configuration.
 
 ---
 
@@ -171,9 +315,15 @@ Public JSON file written by the Dealer after setup and shared through a Docker v
 
 ### Prerequisites
 
+For the distributed deployment:
+
 - Java 17
 - Maven 3.8+
-- Docker Desktop
+- Docker Engine or Docker Desktop with Docker Compose
+- Python 3
+- OpenSSL 4 only if external LMS verification is required
+
+The controlled network evaluation additionally requires Linux with `tc`/`netem`; see [`neteval/README.md`](neteval/README.md).
 
 ### 1. Build
 
@@ -181,14 +331,16 @@ Public JSON file written by the Dealer after setup and shared through a Docker v
 mvn clean package -DskipTests
 ```
 
-### 2. Configure Setup
+For artifact validation, prefer running `mvn clean test` first.
 
-Edit `setup-config.json` in the project root:
+### 2. Configure setup
+
+Edit `setup-config.json` in the repository root:
 
 ```json
 {
   "k": 3,
-  "lmsParams":   "lms_sha256_n32_h5",
+  "lmsParams": "lms_sha256_n32_h5",
   "lmotsParams": "sha256_n32_w4",
   "coalitionPattern": [
     [0, 1],
@@ -198,7 +350,7 @@ Edit `setup-config.json` in the project root:
 }
 ```
 
-Available LMS parameter sets: `lms_sha256_n32_h5` (32 signatures), `lms_sha256_n32_h10` (1024), `lms_sha256_n32_h15` (32768), `lms_sha256_n32_h20` (1048576), `lms_sha256_n24_h5`, `lms_sha256_n24_h10`, `lms_sha256_n24_h15`, `lms_sha256_n24_h20`.
+The coalition pattern is repeated over the available LMS KeyIDs.
 
 ### 3. Start the CAS and Trustees
 
@@ -207,7 +359,7 @@ docker compose up -d cas
 docker compose up -d trustee-0 trustee-1 trustee-2
 ```
 
-Verify that the CAS is `healthy`:
+Check service state:
 
 ```bash
 docker compose ps
@@ -219,7 +371,7 @@ docker compose ps
 docker compose --profile setup up dealer
 ```
 
-The Dealer should terminate with `exited with code 0`. It generates the LMS key pair, publishes the CRVs to the CAS, writes the BulletinBoard, and distributes the PRF keys to the Trustees.
+The Dealer should terminate successfully after generating and publishing the setup material and provisioning the Trustees.
 
 ### 5. Start the Aggregator
 
@@ -227,44 +379,81 @@ The Dealer should terminate with `exited with code 0`. It generates the LMS key 
 docker compose up -d aggregator
 ```
 
-### 6. Sign a Message
+### 6. Sign a message
+
+Linux/macOS/Git Bash:
 
 ```bash
-# Linux/macOS/Git Bash:
-curl -X POST http://localhost:8081/sign/0 \
-     --data-binary "message to sign" \
-     --output signature.bin
+printf 'message to sign' > message.bin
 
-# PowerShell:
-Invoke-WebRequest -Uri "http://localhost:8081/sign/0" \
-                  -Method POST \
-                  -Body "message to sign" \
-                  -OutFile "signature.bin"
+curl -X POST http://localhost:8081/sign/0 \
+  --data-binary @message.bin \
+  --output signature.bin
 ```
 
-The response is the threshold signature serialized in RFC 8554 format and can be consumed by a standard LMS verifier.
+PowerShell:
+
+```powershell
+"message to sign" | Set-Content -NoNewline message.bin
+
+Invoke-WebRequest \
+  -Uri "http://localhost:8081/sign/0" \
+  -Method POST \
+  -InFile "message.bin" \
+  -OutFile "signature.bin"
+```
+
+A successful response contains the threshold-generated signature serialized in the RFC 8554 LMS format.
 
 ### 7. Verify with OpenSSL
 
-Export the LMS public key from the BulletinBoard:
+The threshold signature returned by the Aggregator is serialized in the
+standard RFC 8554 LMS format. It can therefore be verified independently
+with an OpenSSL 4 build with LMS support.
+
+First, extract the LMS public key from the BulletinBoard:
 
 ```bash
-docker compose exec trustee-0 cat /bulletin/board.json
+LMS_PUBLIC_KEY_HEX="$(
+  docker compose exec -T trustee-0 \
+    cat /bulletin/board.json \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["lmsPublicKey"])'
+)"
 ```
 
-Copy the hexadecimal value of `lmsPublicKey` and run `ExportFromHex.main()` to generate `lmspublickey.pem`. Store the previously signed message in `message.bin`.
+Convert the serialized LMS public key to PEM using the repository utility:
+
+```bash
+mvn -q -pl core -DskipTests exec:java \
+  -Dexec.mainClass=es.uma.nicslab.hbs.util.ExportFromHex \
+  -Dexec.args="$LMS_PUBLIC_KEY_HEX lmspublickey.pem"
+```
+
+Then verify the signature against the exact message bytes submitted to the
+Aggregator:
 
 ```bash
 openssl pkeyutl -verify \
-    -in message.bin \
-    -sigfile signature.bin \
-    -inkey lmspublickey.pem -pubin
+  -in message.bin \
+  -sigfile signature.bin \
+  -inkey lmspublickey.pem \
+  -pubin
 ```
 
-Expected result:
+Expected output:
 
 ```text
 Signature Verified Successfully
+```
+
+OpenSSL LMS support requires an OpenSSL 4 build with LMS enabled. The
+network-evaluation runner under [`neteval/`](neteval/README.md) automates
+this verification for every measured signature.
+
+### 8. Stop the deployment
+
+```bash
+docker compose down
 ```
 
 ---
@@ -281,7 +470,7 @@ Signature Verified Successfully
 ### Trustee
 
 | Variable              | Default                  | Description              |
-| --------------------- | ------------------------ | ------------------------ |
+| -----------------------| --------------------------| --------------------------|
 | `TRUSTEE_INDEX`       | —                        | Trustee index (required) |
 | `TRUSTEE_PORT`        | `9090`                   | gRPC port                |
 | `TRUSTEE_DB`          | `/db/trustee.db`         | SQLite database path     |
@@ -309,53 +498,106 @@ Signature Verified Successfully
 
 ---
 
-## Security Model
+## Tests
 
-Following the model of the original scheme:
+The recommended command is the complete reactor:
 
-- A **malicious Aggregator** can prevent valid signatures from being produced, but cannot forge signatures
-- A **tampered CRV** in the CAS can prevent successful signing, but cannot enable forgery; since the CID is the SHA-256 digest of the content, modifications can be detected
-- **KeyID reuse** requires all Trustees belonging to the corresponding coalition to fail in the same way
-- Each Trustee's secret PRF key `K[t]` remains local to the Trustee after setup; it is transmitted only once, from the Dealer to that Trustee, during the setup phase
+```bash
+mvn clean test
+```
+
+At artifact finalization, the test inventory was:
+
+| Module / suite      |   Tests |
+| ------------------- | ------: |
+| `core`              |      39 |
+| `cas`               |      33 |
+| `trustee-server`    |      22 |
+| `integration-tests` |       9 |
+| **Total**           | **103** |
+
+All 103 tests passed with no failures, errors, or skipped tests.
+
+Individual suites can also be executed during development:
+
+```bash
+mvn test -pl core
+mvn test -pl cas
+mvn test -pl trustee-server
+mvn test -pl integration-tests
+```
+
+The `core` role tests cover, among other properties:
+
+- valid threshold signing and RFC 8554 LMS verification;
+- signature-field dimensions;
+- multiple coalition assignments;
+- rejection of KeyID reuse;
+- rejection of modified messages at verification;
+- malformed Coalition Lists and invalid Trustee indices;
+- rejection of out-of-coalition KeyIDs;
+- Round 2 without a matching Round 1;
+- failed `CHK` authentication;
+- independent concurrent signing state for different KeyIDs;
+- the single-Trustee coalition edge case.
+
+The integration tests exercise the distributed protocol with real HTTP CAS communication and persistent Trustee state.
 
 ---
 
-## Tests
+## Local Benchmark
 
-```bash
-# Core unit tests (no network)
-mvn test -pl core
+The local benchmark is intentionally separate from the distributed network evaluation.
 
-# CAS unit tests
-mvn test -pl cas
+It characterizes cryptographic and in-process protocol costs without network delay:
 
-# Trustee unit tests (SQLite in memory)
-mvn test -pl trustee-server
+- Dealer setup cost per KeyID;
+- local threshold signing;
+- LMS verification;
+- plain single-signer LMS signing and verification.
 
-# End-to-end integration tests (real HTTP CAS + SQLite)
-mvn test -pl integration-tests
-```
+The full benchmark uses 8 warm-up iterations and 15 measured repetitions for each tested configuration. See [`bench/README.md`](bench/README.md) for the parameter matrix, commands, expected runtime characteristics, and historical result provenance.
 
 ---
 
 ## Network Evaluation
 
-The distributed implementation includes reproducible experimental infrastructure under [`neteval/`](neteval/README.md) for studying its behavior under different Aggregator–Trustee network conditions.
+The distributed implementation includes a reproducible evaluation harness under [`neteval/`](neteval/README.md).
 
-The evaluation supports:
+It supports:
 
-- 3-, 5-, and 10-Trustee topologies;
-- parallel RPC execution within each signing round;
-- homogeneous RTT and independent per-Trustee RTT profiles;
+- 3-, 5-, and 10-Trustee deployments;
+- homogeneous baseline, 20 ms, 80 ms, and 200 ms RTT profiles;
+- independent per-Trustee RTT profiles for heterogeneous-path experiments;
+- concurrent Trustee RPCs within each signing round;
 - per-round and per-RPC instrumentation;
-- warm-up, conditioning, and randomized execution blocks;
+- warm-up and per-profile conditioning;
+- randomized block ordering;
 - irreversible KeyID reservation;
-- independent verification of every generated signature with OpenSSL.
+- automatic capture of setup, workload, raw metric, network, and signature artifacts;
+- independent OpenSSL verification of generated signatures.
 
-The complete methodology, experimental profiles, and reproduction commands are documented in [`neteval/README.md`](neteval/README.md).
+The complete methodology and reproduction commands are documented in [`neteval/README.md`](neteval/README.md).
+
+---
+
+## Security and Implementation Notes
+
+The implementation follows the threat model and protocol structure of the referenced Kelsey–Lang–Lucks construction.
+
+Important implementation properties include:
+
+- **One-time KeyIDs.** A Trustee atomically claims a KeyID when Round 1 begins. A consumed KeyID is never made available again.
+- **Per-KeyID between-round state.** State is stored independently for each KeyID, allowing distinct signing attempts to be in flight concurrently.
+- **Round-2 authentication.** A Trustee only produces its Round-2 share after validating the reconstructed randomizer using its `AUTH` value.
+- **Public content integrity.** CRVs and the Coalition List are retrieved from content-addressed storage and bound to their CIDs.
+- **Dealer lifecycle.** The Dealer participates only during setup; each Trustee retains only its own PRF key afterward.
+- **Abort behavior.** Failure of any required Trustee in either signing round prevents that signature from being completed.
+
+This repository is an implementation and experimental artifact; the security arguments for the construction itself are given in the referenced paper.
 
 ---
 
 ## Reference
 
-Kelsey, J., Lang, N., & Lucks, S. (2025). *Turning Hash-Based Signatures into Distributed Signatures and Threshold Signatures*. IACR Communications in Cryptology, 2(2). https://doi.org/10.62056/a6ksudy6b
+Kelsey, J., Lang, N., & Lucks, S. (2025). *Turning Hash-Based Signatures into Distributed Signatures and Threshold Signatures: Delegate Your Signing Capability, and Distribute it Among Trustees*. IACR Communications in Cryptology, 2(2). https://doi.org/10.62056/a6ksudy6b
