@@ -1,3 +1,20 @@
+x-trustee-common: &trustee-common
+  build:
+    context: ./trustee-server
+    dockerfile: Dockerfile
+  networks:
+    - hbs-net
+  depends_on:
+    cas:
+      condition: service_healthy
+
+x-trustee-env: &trustee-env
+  TRUSTEE_PORT: "9090"
+  TRUSTEE_DB: "/db/trustee.db"
+  TRUSTEE_CONFIG: "/db/trustee-config.bin"
+  BULLETIN_BOARD_PATH: "/bulletin/board.json"
+  CAS_URL: "http://cas:8080"
+
 services:
 
   # ── CAS: Content Addressable Storage ─────────────────────────────────────
@@ -20,64 +37,94 @@ services:
 
   # ── Trustees ───────────────────────────────────────────────────────────────
   trustee-0:
-    build:
-      context: ./trustee-server
-      dockerfile: Dockerfile
+    <<: *trustee-common
     environment:
+      <<: *trustee-env
       TRUSTEE_INDEX: "0"
-      TRUSTEE_PORT: "9090"
-      TRUSTEE_DB: "/db/trustee.db"
-      TRUSTEE_CONFIG: "/db/trustee-config.bin"
-      BULLETIN_BOARD_PATH: "/bulletin/board.json"
-      CAS_URL: "http://cas:8080"
     volumes:
       - trustee0-db:/db
       - bulletin:/bulletin
-    networks:
-      - hbs-net
-    depends_on:
-      cas:
-        condition: service_healthy
 
   trustee-1:
-    build:
-      context: ./trustee-server
-      dockerfile: Dockerfile
+    <<: *trustee-common
     environment:
+      <<: *trustee-env
       TRUSTEE_INDEX: "1"
-      TRUSTEE_PORT: "9090"
-      TRUSTEE_DB: "/db/trustee.db"
-      TRUSTEE_CONFIG: "/db/trustee-config.bin"
-      BULLETIN_BOARD_PATH: "/bulletin/board.json"
-      CAS_URL: "http://cas:8080"
     volumes:
       - trustee1-db:/db
       - bulletin:/bulletin
-    networks:
-      - hbs-net
-    depends_on:
-      cas:
-        condition: service_healthy
 
   trustee-2:
-    build:
-      context: ./trustee-server
-      dockerfile: Dockerfile
+    <<: *trustee-common
     environment:
+      <<: *trustee-env
       TRUSTEE_INDEX: "2"
-      TRUSTEE_PORT: "9090"
-      TRUSTEE_DB: "/db/trustee.db"
-      TRUSTEE_CONFIG: "/db/trustee-config.bin"
-      BULLETIN_BOARD_PATH: "/bulletin/board.json"
-      CAS_URL: "http://cas:8080"
     volumes:
       - trustee2-db:/db
       - bulletin:/bulletin
-    networks:
-      - hbs-net
-    depends_on:
-      cas:
-        condition: service_healthy
+
+  trustee-3:
+    <<: *trustee-common
+    environment:
+      <<: *trustee-env
+      TRUSTEE_INDEX: "3"
+    volumes:
+      - trustee3-db:/db
+      - bulletin:/bulletin
+
+  trustee-4:
+    <<: *trustee-common
+    environment:
+      <<: *trustee-env
+      TRUSTEE_INDEX: "4"
+    volumes:
+      - trustee4-db:/db
+      - bulletin:/bulletin
+
+  trustee-5:
+    <<: *trustee-common
+    environment:
+      <<: *trustee-env
+      TRUSTEE_INDEX: "5"
+    volumes:
+      - trustee5-db:/db
+      - bulletin:/bulletin
+
+  trustee-6:
+    <<: *trustee-common
+    environment:
+      <<: *trustee-env
+      TRUSTEE_INDEX: "6"
+    volumes:
+      - trustee6-db:/db
+      - bulletin:/bulletin
+
+  trustee-7:
+    <<: *trustee-common
+    environment:
+      <<: *trustee-env
+      TRUSTEE_INDEX: "7"
+    volumes:
+      - trustee7-db:/db
+      - bulletin:/bulletin
+
+  trustee-8:
+    <<: *trustee-common
+    environment:
+      <<: *trustee-env
+      TRUSTEE_INDEX: "8"
+    volumes:
+      - trustee8-db:/db
+      - bulletin:/bulletin
+
+  trustee-9:
+    <<: *trustee-common
+    environment:
+      <<: *trustee-env
+      TRUSTEE_INDEX: "9"
+    volumes:
+      - trustee9-db:/db
+      - bulletin:/bulletin
 
   # ── Dealer: contenedor efímero de setup ───────────────────────────────────
   dealer:
@@ -88,10 +135,10 @@ services:
       CAS_URL: "http://cas:8080"
       BULLETIN_BOARD_PATH: "/bulletin/board.json"
       SETUP_CONFIG_PATH: "/config/setup-config.json"
-      TRUSTEE_URLS: "trustee-0:9090,trustee-1:9090,trustee-2:9090"
+      TRUSTEE_URLS: "${KLL_TRUSTEE_URLS:-trustee-0:9090,trustee-1:9090,trustee-2:9090}"
     volumes:
       - bulletin:/bulletin
-      - ./setup-config.json:/config/setup-config.json:ro
+      - "${KLL_SETUP_CONFIG_PATH:-./setup-config.json}:/config/setup-config.json:ro"
     networks:
       - hbs-net
     depends_on:
@@ -109,7 +156,7 @@ services:
       AGGREGATOR_PORT: "8081"
       CAS_URL: "http://cas:8080"
       BULLETIN_BOARD_PATH: "/bulletin/board.json"
-      TRUSTEE_URLS: "trustee-0:9090,trustee-1:9090,trustee-2:9090"
+      TRUSTEE_URLS: "${KLL_TRUSTEE_URLS:-trustee-0:9090,trustee-1:9090,trustee-2:9090}"
     volumes:
       - bulletin:/bulletin
     networks:
@@ -126,6 +173,13 @@ volumes:
   trustee0-db:   # SQLite del trustee 0
   trustee1-db:   # SQLite del trustee 1
   trustee2-db:   # SQLite del trustee 2
+  trustee3-db:
+  trustee4-db:
+  trustee5-db:
+  trustee6-db:
+  trustee7-db:
+  trustee8-db:
+  trustee9-db:
   bulletin:      # BulletinBoard compartido entre dealer, trustees y aggregator
 
 # ── Red interna ────────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ El sistema transforma el esquema de firma basado en hash LMS (RFC 8554) en un es
 - Content Addressable Storage (CAS) propio para almacenar CRVs y la Coalition List
 - Persistencia del estado de los Trustees en SQLite
 - Verificación de firmas threshold con OpenSSL (validada experimentalmente)
+- Evaluación reproducible bajo RTT controlado mediante Linux `tc`/`netem`, incluyendo topologías de 3, 5 y 10 Trustees y perfiles de red homogéneos y heterogéneos
 
 ---
 
@@ -101,6 +102,11 @@ threshold-hbs/
 │
 ├── dealer-cli/              CLI del Dealer (contenedor efímero)
 │   └── DealerMain, SetupConfig
+│
+├── neteval/                 Infraestructura de evaluación de red reproducible
+│   ├── netem/               Emulación Aggregator ↔ Trustees con tc/netem
+│   ├── runner/              Runner, perfiles y gestión segura de KeyIDs
+│   └── README.md            Metodología y campañas experimentales
 │
 ├── integration-tests/       Tests de integración end-to-end
 ├── docker-compose.yml
@@ -317,6 +323,24 @@ mvn test -pl trustee-server
 # Tests de integración end-to-end (CAS HTTP real + SQLite)
 mvn test -pl integration-tests
 ```
+
+---
+
+## Evaluación de red
+
+La implementación distribuida incluye una infraestructura experimental reproducible en [`neteval/`](neteval/README.md) para estudiar su comportamiento bajo diferentes condiciones Aggregator ↔ Trustees.
+
+La evaluación soporta:
+
+- topologías de 3, 5 y 10 Trustees;
+- ejecución paralela de las RPC dentro de cada ronda;
+- RTT homogéneo y RTT independiente por Trustee;
+- instrumentación por ronda y por RPC;
+- warm-up, conditioning y bloques aleatorizados;
+- reserva irreversible de KeyIDs;
+- verificación independiente de cada firma con OpenSSL.
+
+La metodología, los perfiles experimentales y los comandos de reproducción se documentan en [`neteval/README.md`](neteval/README.md).
 
 ---
 

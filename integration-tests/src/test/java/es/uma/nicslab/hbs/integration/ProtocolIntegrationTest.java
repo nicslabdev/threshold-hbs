@@ -4,6 +4,7 @@ import es.uma.nicslab.hbs.cas.CASClient;
 import es.uma.nicslab.hbs.cas.CASServer;
 import es.uma.nicslab.hbs.cas.BlobStore;
 import es.uma.nicslab.hbs.lms.*;
+import es.uma.nicslab.hbs.metrics.AggregatorSigningMetrics;
 import es.uma.nicslab.hbs.model.*;
 import es.uma.nicslab.hbs.cas.HttpCASReader;
 import es.uma.nicslab.hbs.cas.HttpCASWriter;
@@ -15,6 +16,10 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
 import java.util.Arrays;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -294,6 +299,226 @@ class ProtocolIntegrationTest {
         assertEquals(result.getLengthPath(), loaded.getLengthPATH());
     }
 
+    @Test
+    void aggregator_ejecuta_trustees_en_paralelo_por_ronda() throws Exception {
+
+        int k = 3;
+
+        int[][] coalitions = buildCoalitions(k, 32);
+
+        Dealer dealer = new Dealer(casWriter);
+        SetupDealer result = dealer.setup(k, coalitions, LMS_PARAMS);
+
+        Aggregator agg = new Aggregator(
+                result.getLmsPublicKey(),
+                casReader,
+                result.getClCid()
+        );
+
+        Trustee[] trustees = createTrustees(result, false);
+
+        CountDownLatch round1Entered = new CountDownLatch(k);
+        CountDownLatch round2Entered = new CountDownLatch(k);
+        AtomicInteger round1Completed = new AtomicInteger(0);
+
+        TrusteeProxy[] proxies = new TrusteeProxy[k];
+
+        for (int i = 0; i < k; i++) {
+
+            TrusteeProxy delegate = new LocalTrusteeProxy(trustees[i]);
+
+            proxies[i] = new BarrierTrusteeProxy(
+                    delegate,
+                    round1Entered,
+                    round2Entered,
+                    round1Completed,
+                    k
+            );
+        }
+
+        byte[] message =
+                "parallel trustee execution".getBytes();
+
+        ThresholdSignature sig =
+                agg.aggregatorSign(message, 0, proxies);
+
+        assertNotNull(sig);
+
+        // ---------------------------------------------------------------------
+        // Instrumentation validation
+        // ---------------------------------------------------------------------
+
+        AggregatorSigningMetrics metrics =
+            agg.getLastMetrics();
+
+        assertNotNull(
+            metrics,
+            "aggregatorSign debe producir métricas"
+        );
+
+        assertEquals(
+            "success",
+            metrics.status(),
+            "La ejecución instrumentada debe terminar con status=success"
+        );
+
+        assertEquals(
+            0,
+            metrics.keyID(),
+            "Las métricas deben corresponder al KeyID firmado"
+        );
+
+        assertEquals(
+            k,
+            metrics.coalitionSize(),
+            "coalitionSize debe coincidir con el número de trustees"
+        );
+
+        assertArrayEquals(
+            new int[]{0, 1, 2},
+            metrics.trusteeIndices(),
+            "Las métricas deben conservar los índices reales de los trustees"
+        );
+
+        // Duraciones globales.
+        assertTrue(
+            metrics.totalNs() > 0,
+            "T_total debe ser positivo"
+        );
+
+        assertTrue(
+            metrics.clNs() >= 0,
+            "T_CL debe haberse medido"
+        );
+
+        assertTrue(
+            metrics.crvNs() >= 0,
+            "T_CRV debe haberse medido"
+        );
+
+        assertTrue(
+            metrics.round1Ns() > 0,
+            "T_round1 debe ser positivo"
+        );
+
+        assertTrue(
+            metrics.betweenRoundsNs() >= 0,
+            "T_between_rounds debe haberse medido"
+        );
+
+        assertTrue(
+            metrics.round2Ns() > 0,
+            "T_round2 debe ser positivo"
+        );
+
+        assertTrue(
+            metrics.reconstructionNs() >= 0,
+            "T_reconstruction debe haberse medido"
+        );
+
+        // Debe haber exactamente una medida por trustee y por ronda.
+        assertNotNull(metrics.round1RpcNs());
+        assertNotNull(metrics.round1StartOffsetNs());
+        assertNotNull(metrics.round1EndOffsetNs());
+
+        assertNotNull(metrics.round2RpcNs());
+        assertNotNull(metrics.round2StartOffsetNs());
+        assertNotNull(metrics.round2EndOffsetNs());
+
+        assertEquals(k, metrics.round1RpcNs().length);
+        assertEquals(k, metrics.round1StartOffsetNs().length);
+        assertEquals(k, metrics.round1EndOffsetNs().length);
+
+        assertEquals(k, metrics.round2RpcNs().length);
+        assertEquals(k, metrics.round2StartOffsetNs().length);
+        assertEquals(k, metrics.round2EndOffsetNs().length);
+
+        // Cada RPC debe haber sido ejecutado y medido.
+        for (int i = 0; i < k; i++) {
+
+            assertTrue(
+                metrics.round1RpcNs()[i] > 0,
+                "RPC de Round 1 no medido para trustee " + i
+            );
+
+            assertTrue(
+                metrics.round2RpcNs()[i] > 0,
+                "RPC de Round 2 no medido para trustee " + i
+            );
+
+            assertTrue(
+                metrics.round1StartOffsetNs()[i] >= 0,
+                "Inicio de Round 1 inválido para trustee " + i
+            );
+
+            assertTrue(
+                metrics.round1EndOffsetNs()[i]
+                        >= metrics.round1StartOffsetNs()[i],
+                "Fin de Round 1 anterior al inicio para trustee " + i
+            );
+
+            assertTrue(
+                metrics.round2StartOffsetNs()[i] >= 0,
+                "Inicio de Round 2 inválido para trustee " + i
+            );
+
+            assertTrue(
+                metrics.round2EndOffsetNs()[i]
+                        >= metrics.round2StartOffsetNs()[i],
+                "Fin de Round 2 anterior al inicio para trustee " + i
+            );
+        }
+
+        // ---------------------------------------------------------------------
+        // Critical property: strict barrier between rounds
+        // ---------------------------------------------------------------------
+
+        long lastRound1End =
+            Arrays.stream(metrics.round1EndOffsetNs())
+                    .max()
+                    .orElseThrow();
+
+        long firstRound2Start =
+            Arrays.stream(metrics.round2StartOffsetNs())
+                    .min()
+                    .orElseThrow();
+
+        assertTrue(
+            firstRound2Start >= lastRound1End,
+            "Round 2 comenzó antes de que finalizaran todos los RPC de Round 1"
+        );
+
+        // ---------------------------------------------------------------------
+        // Coherence between round wall-clock and individual RPC measurements
+        // ---------------------------------------------------------------------
+
+        long longestRound1Rpc =
+            Arrays.stream(metrics.round1RpcNs())
+                .max()
+                .orElseThrow();
+
+        long longestRound2Rpc =
+            Arrays.stream(metrics.round2RpcNs())
+                .max()
+                .orElseThrow();
+
+        assertTrue(
+            metrics.round1Ns() >= longestRound1Rpc,
+            "T_round1 no puede ser menor que su RPC más largo"
+        );
+
+        assertTrue(
+            metrics.round2Ns() >= longestRound2Rpc,
+            "T_round2 no puede ser menor que su RPC más largo"
+        );
+
+        assertTrue(
+            metrics.totalNs()
+                    >= metrics.round1Ns() + metrics.round2Ns(),
+            "T_total debe incluir al menos ambas rondas"
+        );
+    }
+
     // -------------------------------------------------------------------------
     // Auxiliares
     // -------------------------------------------------------------------------
@@ -305,5 +530,68 @@ class ProtocolIntegrationTest {
         for (int keyID = 0; keyID < D; keyID++) cl[keyID] = all.clone();
         return cl;
     }
+
+    private static class BarrierTrusteeProxy implements TrusteeProxy {
+
+        private final TrusteeProxy delegate;
+        private final CountDownLatch round1Entered;
+        private final CountDownLatch round2Entered;
+        private final AtomicInteger round1Completed;
+        private final int participants;
+
+        BarrierTrusteeProxy(
+            TrusteeProxy delegate,
+            CountDownLatch round1Entered,
+            CountDownLatch round2Entered,
+            AtomicInteger round1Completed,
+            int participants) {
+
+            this.delegate = delegate;
+            this.round1Entered = round1Entered;
+            this.round2Entered = round2Entered;
+            this.round1Completed = round1Completed;
+            this.participants = participants;
+        }
+
+        @Override
+        public Round1Msg shardSign1(byte[] keyID, byte[] message) throws Exception {
+
+            round1Entered.countDown();
+
+            if (!round1Entered.await(2, TimeUnit.SECONDS)) {
+            throw new IllegalStateException(
+                    "Round 1 trustee calls were not executed concurrently");
+            }
+
+            Round1Msg result = delegate.shardSign1(keyID, message);
+            round1Completed.incrementAndGet();
+
+            return result;
+        }
+
+        @Override
+        public Round2Msg shardSign2(
+            byte[] keyID,
+            byte[] R,
+            byte[] chkI) throws Exception {
+
+            // Round 2 must not start until every Trustee completed Round 1.
+            if (round1Completed.get() != participants) {
+            throw new IllegalStateException(
+                    "Round 2 started before all Round 1 calls completed");
+            }
+
+            round2Entered.countDown();
+
+            if (!round2Entered.await(2, TimeUnit.SECONDS)) {
+            throw new IllegalStateException(
+                    "Round 2 trustee calls were not executed concurrently");
+            }
+
+            return delegate.shardSign2(keyID, R, chkI);
+        }
+    }
+
+    
 
 }

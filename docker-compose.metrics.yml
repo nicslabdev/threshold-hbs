@@ -1,0 +1,61 @@
+x-trustee-metrics: &trustee-metrics
+  volumes:
+    - "${KLL_METRICS_DIR:-./neteval-metrics}:/metrics"
+
+services:
+
+  aggregator:
+    environment:
+      KLL_METRICS_FILE: "/metrics/aggregator.jsonl"
+    volumes:
+      - "${KLL_METRICS_DIR:-./neteval-metrics}:/metrics"
+
+  trustee-0:
+    <<: *trustee-metrics
+    environment:
+      KLL_METRICS_FILE: "/metrics/trustee-0.jsonl"
+
+  trustee-1:
+    <<: *trustee-metrics
+    environment:
+      KLL_METRICS_FILE: "/metrics/trustee-1.jsonl"
+
+  trustee-2:
+    <<: *trustee-metrics
+    environment:
+      KLL_METRICS_FILE: "/metrics/trustee-2.jsonl"
+
+  trustee-3:
+    <<: *trustee-metrics
+    environment:
+      KLL_METRICS_FILE: "/metrics/trustee-3.jsonl"
+
+  trustee-4:
+    <<: *trustee-metrics
+    environment:
+      KLL_METRICS_FILE: "/metrics/trustee-4.jsonl"
+
+  trustee-5:
+    <<: *trustee-metrics
+    environment:
+      KLL_METRICS_FILE: "/metrics/trustee-5.jsonl"
+
+  trustee-6:
+    <<: *trustee-metrics
+    environment:
+      KLL_METRICS_FILE: "/metrics/trustee-6.jsonl"
+
+  trustee-7:
+    <<: *trustee-metrics
+    environment:
+      KLL_METRICS_FILE: "/metrics/trustee-7.jsonl"
+
+  trustee-8:
+    <<: *trustee-metrics
+    environment:
+      KLL_METRICS_FILE: "/metrics/trustee-8.jsonl"
+
+  trustee-9:
+    <<: *trustee-metrics
+    environment:
+      KLL_METRICS_FILE: "/metrics/trustee-9.jsonl"
