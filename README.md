@@ -1,32 +1,32 @@
-# Threshold Hash-Based Signatures — Implementación Distribuida
+# Threshold Hash-Based Signatures — Distributed Implementation
 
-Implementación en Java del esquema de firma threshold sobre LMS descrito en el paper:
+Java implementation of the threshold signature scheme over LMS described in:
 
 > **"Turning Hash-Based Signatures into Distributed Signatures and Threshold Signatures"**  
 > John Kelsey, Nathalie Lang, Stefan Lucks — IACR Communications in Cryptology, Vol. 2, No. 2, 2025
 
-El sistema transforma el esquema de firma basado en hash LMS (RFC 8554) en un esquema de firma distribuida donde múltiples trustees cooperan para producir firmas válidas. La firma resultante es indistinguible de una firma LMS estándar y puede verificarse con cualquier verificador LMS compatible, incluido OpenSSL.
+The system transforms the LMS hash-based signature scheme (RFC 8554) into a distributed signing scheme in which multiple Trustees cooperate to produce valid signatures. The resulting signature is indistinguishable from a standard LMS signature and can be verified by any compatible LMS verifier, including OpenSSL.
 
 ---
 
-## Características principales
+## Main Features
 
-- Implementación del protocolo de firma distribuida en dos rondas (Algorithms 5-11 del paper)
-- Despliegue en contenedores Docker independientes para cada rol del protocolo
-- Comunicación entre Aggregator y Trustees via gRPC (Protocol Buffers)
-- Content Addressable Storage (CAS) propio para almacenar CRVs y la Coalition List
-- Persistencia del estado de los Trustees en SQLite
-- Verificación de firmas threshold con OpenSSL (validada experimentalmente)
-- Evaluación reproducible bajo RTT controlado mediante Linux `tc`/`netem`, incluyendo topologías de 3, 5 y 10 Trustees y perfiles de red homogéneos y heterogéneos
+- Implementation of the two-round distributed signing protocol (Algorithms 5–11 of the paper)
+- Independent Docker containers for each protocol role
+- Aggregator–Trustee communication over gRPC (Protocol Buffers)
+- Custom Content Addressable Storage (CAS) for CRVs and the Coalition List
+- Persistent Trustee state using SQLite
+- Threshold-signature verification with OpenSSL, validated experimentally
+- Reproducible evaluation under controlled RTT using Linux `tc`/`netem`, including 3-, 5-, and 10-Trustee topologies and both homogeneous and heterogeneous network profiles
 
 ---
 
-## Arquitectura del sistema
+## System Architecture
 
-```
+```text
 ┌─────────────┐   HTTP PUT    ┌─────────────┐
 │   Dealer    │ ────────────► │     CAS     │
-│  (efímero)  │               │ (HTTP :8080)│
+│ (ephemeral) │               │ (HTTP :8080)│
 └──────┬──────┘               └──────┬──────┘
        │ gRPC Setup(K[t])            │ HTTP GET
        ▼                             ▼
@@ -41,46 +41,50 @@ El sistema transforma el esquema de firma basado en hash LMS (RFC 8554) en un es
 │  (gRPC 9090) │
 └──────────────┘
 
-Volumen compartido: /bulletin/board.json ← Dealer escribe, Trustees y Aggregator leen
+Shared volume: /bulletin/board.json ← written by Dealer, read by Trustees and Aggregator
 ```
 
-### Roles del protocolo
+### Protocol Roles
 
-**Dealer** — contenedor efímero que ejecuta el setup:
-1. Genera el keypair LMS y las claves PRF `K[t]` para cada trustee
-2. Genera los CRVs (Common Reference Values) y los publica en el CAS
-3. Publica la Coalition List (CL) en el CAS
-4. Escribe el BulletinBoard con la clave pública LMS y los CIDs
-5. Distribuye `K[t]` a cada trustee via gRPC y termina
+**Dealer** — ephemeral container that performs setup:
 
-**Trustees** — servidores gRPC que participan en la firma. Cada trustee:
-- Guarda su clave PRF `K[t]` en disco (material secreto)
-- Mantiene la lista de KeyIDs disponibles en SQLite
-- Participa en dos rondas de firma coordinadas por el Aggregator
-- Nunca reutiliza un KeyID (propiedad one-time del esquema LMS)
+1. Generates the LMS key pair and the PRF keys `K[t]` for each Trustee
+2. Generates the CRVs (Common Reference Values) and publishes them to the CAS
+3. Publishes the Coalition List (CL) to the CAS
+4. Writes the BulletinBoard containing the LMS public key and the corresponding CIDs
+5. Distributes `K[t]` to each Trustee over gRPC and terminates
 
-**Aggregator** — servidor HTTP que coordina la firma:
-- Recibe peticiones `POST /sign/{keyID}` del exterior
-- Descarga el CRV correspondiente del CAS
-- Ejecuta las dos rondas del protocolo con los trustees via gRPC
-- Reconstruye la firma completa `(R, PATH, Z)` y la devuelve en formato RFC 8554
+**Trustees** — gRPC servers participating in the signing protocol. Each Trustee:
 
-**CAS** — servidor HTTP de almacenamiento por contenido:
-- Almacena blobs identificados por su SHA-256 (CID)
+- Stores its PRF key `K[t]` on disk as secret material
+- Maintains the list of available KeyIDs persistently in SQLite
+- Participates in the two signing rounds coordinated by the Aggregator
+- Never reuses a KeyID, preserving the one-time property required by LMS
+
+**Aggregator** — HTTP server coordinating the signing protocol:
+
+- Receives external `POST /sign/{keyID}` requests
+- Retrieves the corresponding CRV from the CAS
+- Executes the two protocol rounds with the Trustees over gRPC
+- Reconstructs the complete `(R, PATH, Z)` signature and returns it in RFC 8554 format
+
+**CAS** — content-addressable HTTP storage service:
+
+- Stores blobs identified by their SHA-256 digest (CID)
 - Endpoints: `POST /blobs` → CID, `GET /blobs/{cid}` → bytes
-- Verifica integridad automáticamente en cada descarga
+- Automatically verifies content integrity on retrieval
 
 ---
 
-## Estructura del proyecto (Maven multi-módulo)
+## Project Structure (Maven Multi-Module)
 
-```
+```text
 threshold-hbs/
-├── core/                    Lógica criptográfica pura (sin red ni disco)
+├── core/                    Pure cryptographic logic (no network or disk I/O)
 │   └── src/main/java/es/uma/nicslab/hbs/
-│       ├── lms/             Clases LMS/LM-OTS (BouncyCastle extendido)
+│       ├── lms/             LMS/LM-OTS classes (extended BouncyCastle)
 │       ├── model/           CRV, SetupDealer, ThresholdSignature, Round1Msg, Round2Msg
-│       ├── protocol/        Interfaces y clases del protocolo:
+│       ├── protocol/        Protocol interfaces and classes:
 │       │                    BulletinBoard, CASReader, CASWriter, CRVSerializer,
 │       │                    CLSerializer, CoalitionEntry, TrusteeProxy,
 │       │                    LocalTrusteeProxy, InMemoryCAS, TrusteeState,
@@ -88,49 +92,49 @@ threshold-hbs/
 │       ├── roles/           Dealer, Trustee, Aggregator
 │       └── util/            PRF, ByteUtils, LMSExporterOpenSSL, ExportFromHex
 │
-├── proto/                   Contratos gRPC
+├── proto/                   gRPC contracts
 │   └── trustee.proto
 │
-├── cas/                     Servidor CAS HTTP (Javalin 5.6.3)
+├── cas/                     HTTP CAS server (Javalin 5.6.3)
 │   └── CASServer, BlobStore, CASClient, HttpCASReader, HttpCASWriter
 │
-├── trustee-server/          Servidor gRPC del Trustee
+├── trustee-server/          Trustee gRPC server
 │   └── TrusteeGrpcServer, TrusteeServiceImpl, TrusteeConfig, SQLiteTrusteeState
 │
-├── aggregator-server/       Servidor HTTP del Aggregator
+├── aggregator-server/       Aggregator HTTP server
 │   └── AggregatorServer, GrpcTrusteeProxy
 │
-├── dealer-cli/              CLI del Dealer (contenedor efímero)
+├── dealer-cli/              Dealer CLI (ephemeral container)
 │   └── DealerMain, SetupConfig
 │
-├── neteval/                 Infraestructura de evaluación de red reproducible
-│   ├── netem/               Emulación Aggregator ↔ Trustees con tc/netem
-│   ├── runner/              Runner, perfiles y gestión segura de KeyIDs
-│   └── README.md            Metodología y campañas experimentales
+├── neteval/                 Reproducible network-evaluation infrastructure
+│   ├── netem/               Aggregator ↔ Trustee emulation with tc/netem
+│   ├── runner/              Runner, profiles, and safe KeyID management
+│   └── README.md            Experimental methodology and campaigns
 │
-├── integration-tests/       Tests de integración end-to-end
+├── integration-tests/       End-to-end integration tests
 ├── docker-compose.yml
 └── setup-config.json
 ```
 
 ---
 
-## Tecnologías
+## Technologies
 
-| Componente | Tecnología |
-|-----------|-----------|
-| Lenguaje | Java 17 |
-| Build | Maven (multi-módulo) |
-| Criptografía | BouncyCastle 1.84, RFC 8554 (LMS/LM-OTS) |
-| Comunicación | gRPC 1.75.0 + Protocol Buffers |
-| Servidor HTTP | Javalin 5.6.3 (CAS y Aggregator) |
-| Persistencia | SQLite (sqlite-jdbc 3.46.0) |
-| Contenedores | Docker + Docker Compose |
-| Imagen base | eclipse-temurin:17-jre-alpine |
+| Component     | Technology                               |
+| ------------- | ---------------------------------------- |
+| Language      | Java 17                                  |
+| Build system  | Maven (multi-module)                     |
+| Cryptography  | BouncyCastle 1.84, RFC 8554 (LMS/LM-OTS) |
+| Communication | gRPC 1.75.0 + Protocol Buffers           |
+| HTTP server   | Javalin 5.6.3 (CAS and Aggregator)       |
+| Persistence   | SQLite (sqlite-jdbc 3.46.0)              |
+| Containers    | Docker + Docker Compose                  |
+| Base image    | eclipse-temurin:17-jre-alpine            |
 
 ---
 
-## Protocolo gRPC (trustee.proto)
+## gRPC Protocol (`trustee.proto`)
 
 ```protobuf
 service TrusteeService {
@@ -144,13 +148,13 @@ message Sign1Request { int32 key_id = 1; bytes message = 2; int32 n = 3; }
 message Sign2Request { int32 key_id = 1; bytes r = 2; bytes chk_i = 3; }
 ```
 
-`Setup` solo transporta la clave PRF secreta `K[t]`. El resto de parámetros del esquema (clave pública LMS, longitudes, CID de la CL) los lee el trustee del BulletinBoard compartido.
+`Setup` only transports the secret PRF key `K[t]`. The remaining scheme parameters (LMS public key, field lengths, and Coalition List CID) are read by each Trustee from the shared BulletinBoard.
 
 ---
 
 ## BulletinBoard
 
-Fichero JSON público escrito por el Dealer al finalizar el setup, compartido en un volumen Docker:
+Public JSON file written by the Dealer after setup and shared through a Docker volume:
 
 ```json
 {
@@ -163,23 +167,23 @@ Fichero JSON público escrito por el Dealer al finalizar el setup, compartido en
 
 ---
 
-## Despliegue
+## Deployment
 
-### Prerequisitos
+### Prerequisites
 
 - Java 17
 - Maven 3.8+
 - Docker Desktop
 
-### 1. Compilar
+### 1. Build
 
 ```bash
 mvn clean package -DskipTests
 ```
 
-### 2. Configurar el setup
+### 2. Configure Setup
 
-Edita `setup-config.json` en la raíz del proyecto:
+Edit `setup-config.json` in the project root:
 
 ```json
 {
@@ -194,156 +198,164 @@ Edita `setup-config.json` en la raíz del proyecto:
 }
 ```
 
-Parámetros LMS disponibles: `lms_sha256_n32_h5` (32 firmas), `lms_sha256_n32_h10` (1024), `lms_sha256_n32_h15` (32768), `lms_sha256_n32_h20` (1048576), `lms_sha256_n24_h5`, `lms_sha256_n24_h10`, `lms_sha256_n24_h15`, `lms_sha256_n24_h20`.
+Available LMS parameter sets: `lms_sha256_n32_h5` (32 signatures), `lms_sha256_n32_h10` (1024), `lms_sha256_n32_h15` (32768), `lms_sha256_n32_h20` (1048576), `lms_sha256_n24_h5`, `lms_sha256_n24_h10`, `lms_sha256_n24_h15`, `lms_sha256_n24_h20`.
 
-### 3. Arrancar el CAS y los Trustees
+### 3. Start the CAS and Trustees
 
 ```bash
 docker compose up -d cas
 docker compose up -d trustee-0 trustee-1 trustee-2
 ```
 
-Verifica que el CAS está `healthy`:
+Verify that the CAS is `healthy`:
 
 ```bash
 docker compose ps
 ```
 
-### 4. Ejecutar el Dealer (setup efímero)
+### 4. Run the Dealer
 
 ```bash
 docker compose --profile setup up dealer
 ```
 
-Debe terminar con `exited with code 0`. El Dealer genera el keypair LMS, publica los CRVs en el CAS, escribe el BulletinBoard y distribuye las claves PRF a los trustees.
+The Dealer should terminate with `exited with code 0`. It generates the LMS key pair, publishes the CRVs to the CAS, writes the BulletinBoard, and distributes the PRF keys to the Trustees.
 
-### 5. Arrancar el Aggregator
+### 5. Start the Aggregator
 
 ```bash
 docker compose up -d aggregator
 ```
 
-### 6. Firmar un mensaje
+### 6. Sign a Message
 
 ```bash
 # Linux/macOS/Git Bash:
 curl -X POST http://localhost:8081/sign/0 \
-     --data-binary "mensaje a firmar" \
-     --output firma.bin
+     --data-binary "message to sign" \
+     --output signature.bin
 
 # PowerShell:
 Invoke-WebRequest -Uri "http://localhost:8081/sign/0" \
                   -Method POST \
-                  -Body "mensaje a firmar" \
-                  -OutFile "firma.bin"
+                  -Body "message to sign" \
+                  -OutFile "signature.bin"
 ```
 
-La respuesta es la firma threshold serializada en formato RFC 8554, compatible con cualquier verificador LMS estándar.
+The response is the threshold signature serialized in RFC 8554 format and can be consumed by a standard LMS verifier.
 
-### 7. Verificar con OpenSSL
+### 7. Verify with OpenSSL
 
-Exportar la clave pública del BulletinBoard:
+Export the LMS public key from the BulletinBoard:
 
 ```bash
 docker compose exec trustee-0 cat /bulletin/board.json
 ```
 
-Copiar el valor hex de `lmsPublicKey` y ejecutar `ExportFromHex.main()` para obtener `lmspublickey.pem`. Copiar en un archivo `message.bin` el mensaje firmado previamente.
+Copy the hexadecimal value of `lmsPublicKey` and run `ExportFromHex.main()` to generate `lmspublickey.pem`. Store the previously signed message in `message.bin`.
 
 ```bash
 openssl pkeyutl -verify \
     -in message.bin \
-    -sigfile firma.bin \
+    -sigfile signature.bin \
     -inkey lmspublickey.pem -pubin
 ```
 
-Resultado esperado: `Signature Verified Successfully`
+Expected result:
+
+```text
+Signature Verified Successfully
+```
 
 ---
 
-## Variables de entorno
+## Environment Variables
 
 ### CAS
-| Variable | Default | Descripción |
-|----------|---------|-------------|
-| `CAS_PORT` | `8080` | Puerto HTTP |
-| `CAS_DATA_DIR` | `/data` | Directorio de blobs |
+
+| Variable       | Default | Description            |
+| -------------- | ------- | ---------------------- |
+| `CAS_PORT`     | `8080`  | HTTP port              |
+| `CAS_DATA_DIR` | `/data` | Blob storage directory |
 
 ### Trustee
-| Variable | Default | Descripción |
-|----------|---------|-------------|
-| `TRUSTEE_INDEX` | — | Índice del trustee (obligatorio) |
-| `TRUSTEE_PORT` | `9090` | Puerto gRPC |
-| `TRUSTEE_DB` | `/db/trustee.db` | Ruta SQLite |
-| `TRUSTEE_CONFIG` | `/db/trustee-config.bin` | Ruta config PRF |
-| `BULLETIN_BOARD_PATH` | `/bulletin/board.json` | Ruta BulletinBoard |
-| `CAS_URL` | `http://cas:8080` | URL del CAS |
+
+| Variable              | Default                  | Description              |
+| --------------------- | ------------------------ | ------------------------ |
+| `TRUSTEE_INDEX`       | —                        | Trustee index (required) |
+| `TRUSTEE_PORT`        | `9090`                   | gRPC port                |
+| `TRUSTEE_DB`          | `/db/trustee.db`         | SQLite database path     |
+| `TRUSTEE_CONFIG`      | `/db/trustee-config.bin` | PRF configuration path   |
+| `BULLETIN_BOARD_PATH` | `/bulletin/board.json`   | BulletinBoard path       |
+| `CAS_URL`             | `http://cas:8080`        | CAS URL                  |
 
 ### Dealer
-| Variable | Default | Descripción |
-|----------|---------|-------------|
-| `SETUP_CONFIG_PATH` | `/config/setup-config.json` | Ruta configuración |
-| `BULLETIN_BOARD_PATH` | `/bulletin/board.json` | Ruta BulletinBoard |
-| `TRUSTEE_URLS` | — | Direcciones trustees (obligatorio) |
-| `CAS_URL` | `http://cas:8080` | URL del CAS |
+
+| Variable              | Default                     | Description                  |
+| --------------------- | --------------------------- | ---------------------------- |
+| `SETUP_CONFIG_PATH`   | `/config/setup-config.json` | Setup configuration path     |
+| `BULLETIN_BOARD_PATH` | `/bulletin/board.json`      | BulletinBoard path           |
+| `TRUSTEE_URLS`        | —                           | Trustee addresses (required) |
+| `CAS_URL`             | `http://cas:8080`           | CAS URL                      |
 
 ### Aggregator
-| Variable | Default | Descripción |
-|----------|---------|-------------|
-| `AGGREGATOR_PORT` | `8081` | Puerto HTTP |
-| `CAS_URL` | `http://cas:8080` | URL del CAS |
-| `BULLETIN_BOARD_PATH` | `/bulletin/board.json` | Ruta BulletinBoard |
-| `TRUSTEE_URLS` | — | Direcciones trustees (obligatorio) |
+
+| Variable              | Default                | Description                  |
+| --------------------- | ---------------------- | ---------------------------- |
+| `AGGREGATOR_PORT`     | `8081`                 | HTTP port                    |
+| `CAS_URL`             | `http://cas:8080`      | CAS URL                      |
+| `BULLETIN_BOARD_PATH` | `/bulletin/board.json` | BulletinBoard path           |
+| `TRUSTEE_URLS`        | —                      | Trustee addresses (required) |
 
 ---
 
-## Modelo de seguridad
+## Security Model
 
-Siguiendo el modelo del paper:
+Following the model of the original scheme:
 
-- Un **Aggregator malicioso** puede impedir que se generen firmas válidas, pero no puede forjarlas
-- Un **CRV alterado** en el CAS puede impedir firmas válidas, pero no permite forjas (el CID = SHA-256 del contenido permite detectar alteraciones)
-- La **reutilización de KeyIDs** requiere que todos los trustees de una coalición fallen simultáneamente de la misma forma
-- La **clave PRF `K[t]`** de cada trustee nunca sale de su contenedor; solo viaja del Dealer al Trustee en el Setup via gRPC
+- A **malicious Aggregator** can prevent valid signatures from being produced, but cannot forge signatures
+- A **tampered CRV** in the CAS can prevent successful signing, but cannot enable forgery; since the CID is the SHA-256 digest of the content, modifications can be detected
+- **KeyID reuse** requires all Trustees belonging to the corresponding coalition to fail in the same way
+- Each Trustee's secret PRF key `K[t]` remains local to the Trustee after setup; it is transmitted only once, from the Dealer to that Trustee, during the setup phase
 
 ---
 
 ## Tests
 
 ```bash
-# Tests unitarios de core (sin red)
+# Core unit tests (no network)
 mvn test -pl core
 
-# Tests unitarios del CAS
+# CAS unit tests
 mvn test -pl cas
 
-# Tests unitarios del trustee (SQLite en memoria)
+# Trustee unit tests (SQLite in memory)
 mvn test -pl trustee-server
 
-# Tests de integración end-to-end (CAS HTTP real + SQLite)
+# End-to-end integration tests (real HTTP CAS + SQLite)
 mvn test -pl integration-tests
 ```
 
 ---
 
-## Evaluación de red
+## Network Evaluation
 
-La implementación distribuida incluye una infraestructura experimental reproducible en [`neteval/`](neteval/README.md) para estudiar su comportamiento bajo diferentes condiciones Aggregator ↔ Trustees.
+The distributed implementation includes reproducible experimental infrastructure under [`neteval/`](neteval/README.md) for studying its behavior under different Aggregator–Trustee network conditions.
 
-La evaluación soporta:
+The evaluation supports:
 
-- topologías de 3, 5 y 10 Trustees;
-- ejecución paralela de las RPC dentro de cada ronda;
-- RTT homogéneo y RTT independiente por Trustee;
-- instrumentación por ronda y por RPC;
-- warm-up, conditioning y bloques aleatorizados;
-- reserva irreversible de KeyIDs;
-- verificación independiente de cada firma con OpenSSL.
+- 3-, 5-, and 10-Trustee topologies;
+- parallel RPC execution within each signing round;
+- homogeneous RTT and independent per-Trustee RTT profiles;
+- per-round and per-RPC instrumentation;
+- warm-up, conditioning, and randomized execution blocks;
+- irreversible KeyID reservation;
+- independent verification of every generated signature with OpenSSL.
 
-La metodología, los perfiles experimentales y los comandos de reproducción se documentan en [`neteval/README.md`](neteval/README.md).
+The complete methodology, experimental profiles, and reproduction commands are documented in [`neteval/README.md`](neteval/README.md).
 
 ---
 
-## Referencia
+## Reference
 
 Kelsey, J., Lang, N., & Lucks, S. (2025). *Turning Hash-Based Signatures into Distributed Signatures and Threshold Signatures*. IACR Communications in Cryptology, 2(2). https://doi.org/10.62056/a6ksudy6b

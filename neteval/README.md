@@ -1,21 +1,21 @@
 # KLL/Haystack Network Evaluation
 
-Infraestructura experimental para evaluar la implementación distribuida de **KLL/Haystack sobre LMS** bajo condiciones de red controladas y reproducibles.
+Experimental infrastructure for evaluating the distributed **KLL/Haystack over LMS** implementation under controlled and reproducible network conditions.
 
-El objetivo de `neteval/` es medir el comportamiento del protocolo real —contenedores independientes, sockets reales y estado persistente— al variar principalmente:
+The goal of `neteval/` is to measure the behavior of the real protocol — independent containers, real sockets, and persistent state — while primarily varying:
 
-- el número de Trustees participantes;
-- el RTT entre Aggregator y Trustees;
-- la contribución de cada fase del protocolo al tiempo total de firma;
-- el efecto de RTTs heterogéneos entre Trustees.
+- the number of participating Trustees;
+- the RTT between the Aggregator and Trustees;
+- the contribution of each protocol phase to total signing time;
+- the effect of heterogeneous RTTs across Trustees.
 
-La infraestructura está preparada para campañas con **3, 5 y 10 Trustees**.
+The infrastructure supports campaigns with **3, 5, and 10 Trustees**.
 
 ---
 
-## 1. Arquitectura
+## 1. Architecture
 
-El despliegue usa Java 17 y Docker Compose.
+The deployment uses Java 17 and Docker Compose.
 
 ```text
                     ┌───────────────┐
@@ -33,18 +33,18 @@ El despliegue usa Java 17 y Docker Compose.
 
 Roles:
 
-- **Dealer**: ejecuta el setup una sola vez, genera el material LMS/CRV, publica el BulletinBoard y distribuye la configuración de los Trustees.
-- **Trustees**: mantienen su material secreto y el estado de KeyIDs consumidos.
-- **Aggregator**: coordina las dos rondas de firma y reconstruye la firma LMS final.
-- **CAS**: almacena los CRVs y demás blobs públicos direccionados por contenido.
+- **Dealer**: runs setup once, generates the LMS/CRV material, publishes the BulletinBoard, and distributes Trustee configuration.
+- **Trustees**: maintain their secret material and the state of consumed KeyIDs.
+- **Aggregator**: coordinates the two signing rounds and reconstructs the final LMS signature.
+- **CAS**: stores CRVs and other public content-addressed blobs.
 
-Las firmas producidas se serializan en formato **RFC 8554** y se verifican de forma independiente con **OpenSSL 4.x con soporte LMS**.
+Generated signatures are serialized in **RFC 8554** format and independently verified with **OpenSSL 4.x with LMS support**.
 
 ---
 
-## 2. Firma distribuida
+## 2. Distributed Signing
 
-La firma usa dos rondas Aggregator ↔ Trustees.
+Signing uses two Aggregator ↔ Trustee rounds.
 
 ```text
 Round 1
@@ -56,101 +56,101 @@ Aggregator ──parallel──> Trustees
 Aggregator <─parallel── Trustees
 ```
 
-Las RPC hacia los Trustees se ejecutan **en paralelo dentro de cada ronda**, con una barrera entre Round 1 y Round 2.
+RPCs to Trustees are executed **in parallel within each round**, with a barrier between Round 1 and Round 2.
 
-Para una red homogénea, el coste de red esperado en el critical path es aproximadamente:
+For a homogeneous network, the expected network contribution to signing latency is approximately:
 
 ```text
 T_network ≈ 2 × RTT
 ```
 
-y no:
+rather than:
 
 ```text
 2 × coalition_size × RTT
 ```
 
-porque las RPC de todos los Trustees participantes se ejecutan concurrentemente dentro de cada ronda.
+because the RPCs for all participating Trustees execute concurrently within each round.
 
-Cuando los RTT son heterogéneos, cada ronda completa cuando termina su RPC participante más lenta. De forma aproximada, cuando el retardo de propagación domina:
+When RTTs are heterogeneous, each round completes when its slowest participating RPC completes. As a first-order approximation, when propagation delay dominates:
 
 ```text
 T_network ≈ 2 × max(RTT_i)
 ```
 
-La infraestructura incluye una campaña específica para validar experimentalmente este comportamiento.
+The infrastructure includes a dedicated campaign to validate this behavior experimentally.
 
 ---
 
-## 3. Instrumentación
+## 3. Instrumentation
 
-Se registra instrumentación tanto en el Aggregator como en los Trustees.
+Instrumentation is collected at both the Aggregator and the Trustees.
 
-El Aggregator recoge, entre otras métricas:
+Among other metrics, the Aggregator records:
 
-- tiempo total de `AggregatorSign`;
-- lectura de Coalition List / CRV;
-- duración de Round 1;
-- duración individual de cada RPC de Round 1;
-- offsets de inicio y fin de cada RPC de Round 1;
-- tiempo entre rondas;
-- duración de Round 2;
-- duración individual de cada RPC de Round 2;
-- offsets de inicio y fin de cada RPC de Round 2;
-- reconstrucción;
-- procesamiento del servidor HTTP;
-- serialización;
-- tamaños de request/response protobuf.
+- total `AggregatorSign` time;
+- Coalition List / CRV retrieval time;
+- Round 1 duration;
+- individual duration of each Round 1 RPC;
+- start and end offsets of each Round 1 RPC;
+- time between rounds;
+- Round 2 duration;
+- individual duration of each Round 2 RPC;
+- start and end offsets of each Round 2 RPC;
+- reconstruction time;
+- HTTP server processing time;
+- serialization time;
+- protobuf request/response sizes.
 
-Cada Trustee registra los tiempos de procesamiento de `ShardSign1` y `ShardSign2`.
+Each Trustee records the processing times of `ShardSign1` and `ShardSign2`.
 
-Los datos se escriben en JSONL:
+Data is written as JSONL under:
 
 ```text
 neteval/results/<experiment-id>/raw/
 ```
 
-> Los byte counts instrumentados corresponden a **payload protobuf serializado**, no al número total de bytes transmitidos sobre Ethernet/TCP/HTTP2.
+> Instrumented byte counts correspond to **serialized protobuf payloads**, not to the total number of bytes transmitted over Ethernet/TCP/HTTP2.
 
-La instrumentación permite comprobar directamente, entre otras propiedades:
+The instrumentation makes it possible to directly verify, among other properties:
 
 ```text
 T_round ≈ max(T_RPC_i)
 ```
 
-y determinar qué Trustee completa último cada ronda.
+and to determine which Trustee completes last in each round.
 
 ---
 
-## 4. Emulación de red
+## 4. Network Emulation
 
-La emulación está implementada en:
+Network emulation is implemented in:
 
 ```text
 neteval/netem/netem.sh
 ```
 
-Utiliza Linux `tc`, `netem` y filtros `flower` sobre los host-side veth creados por Docker.
+It uses Linux `tc`, `netem`, and `flower` filters on the host-side veth interfaces created by Docker.
 
-Solo se modifica el tráfico:
+Only the following traffic is shaped:
 
 ```text
 Aggregator ↔ Trustees
 ```
 
-El tráfico hacia CAS y el resto de la red del despliegue permanece sin shaping.
+Traffic to the CAS and the rest of the deployment network remains unshaped.
 
-El retraso se aplica simétricamente:
+Delay is applied symmetrically:
 
 ```text
-delay por dirección = RTT / 2
+delay per direction = RTT / 2
 ```
 
-El script descubre dinámicamente los Trustees activos y soporta las topologías usadas en la evaluación.
+The script dynamically discovers active Trustees and supports the topologies used in the evaluation.
 
-### RTT homogéneo
+### Homogeneous RTT
 
-Ejemplos:
+Examples:
 
 ```bash
 sudo neteval/netem/netem.sh apply 80
@@ -158,81 +158,81 @@ sudo neteval/netem/netem.sh show
 sudo neteval/netem/netem.sh reset
 ```
 
-`apply 80` configura aproximadamente **80 ms RTT** entre el Aggregator y todos los Trustees activos.
+`apply 80` configures approximately **80 ms RTT** between the Aggregator and all active Trustees.
 
-### RTT heterogéneo
+### Heterogeneous RTT
 
-También puede configurarse un RTT distinto para cada Trustee activo.
+A different RTT can also be configured for each active Trustee.
 
-Por ejemplo, con 10 Trustees:
+For example, with 10 Trustees:
 
 ```bash
 sudo neteval/netem/netem.sh apply \
   20 20 20 20 20 20 20 20 20 200
 ```
 
-configura:
+configures:
 
 ```text
 trustee-0 ... trustee-8: 20 ms RTT
 trustee-9:                200 ms RTT
 ```
 
-Antes de ejecutar las muestras de un perfil, el runner mide el RTT real desde el network namespace del Aggregator y valida cada Trustee de forma independiente.
+Before running samples for a profile, the runner measures the actual RTT from the Aggregator network namespace and validates each Trustee independently.
 
 ---
 
 ## 5. Experiment Runner
 
-El runner principal es:
+The main runner is:
 
 ```text
 neteval/runner/run.sh
 ```
 
-Automatiza el experimento completo:
+It automates the complete experiment:
 
 ```text
 fresh deployment
 → build
 → Dealer setup
-→ startup de Trustees/Aggregator
-→ workload determinista
-→ reserva de KeyIDs
+→ Trustee/Aggregator startup
+→ deterministic workload
+→ KeyID reservation
 → warm-up
-→ schedule aleatorio por bloques
-→ configuración netem
-→ validación RTT
-→ firmas
-→ verificación OpenSSL
-→ colección de métricas
-→ validación del dataset
+→ randomized block schedule
+→ netem configuration
+→ RTT validation
+→ signatures
+→ OpenSSL verification
+→ metric collection
+→ dataset validation
 → cleanup
 ```
 
-### Perfiles de red
+### Network Profiles
 
-El conjunto de perfiles puede seleccionarse mediante:
+The set of profiles can be selected with:
 
 ```bash
 KLL_PROFILES_FILE=/path/to/profiles.json
 ```
 
-El fichero por defecto es:
+The default file is:
 
 ```text
 neteval/runner/profiles.json
 ```
 
-y contiene los perfiles homogéneos utilizados en la campaña principal.
+and contains the homogeneous profiles used in the main campaign.
 
-Los perfiles heterogéneos utilizados en la validación adicional se encuentran en:
+The heterogeneous profiles used in the additional validation are stored in:
 
 ```text
 neteval/runner/profiles-heterogeneous.json
 ```
 
-El runner acepta perfiles con:
+The runner accepts scalar profiles such as:
 
 ```json
 {
@@ -241,7 +241,7 @@ El runner acepta perfiles con:
 }
 ```
 
-o perfiles con un RTT independiente por Trustee:
+or profiles with an independent RTT per Trustee:
 
 ```json
 {
@@ -253,43 +253,43 @@ o perfiles con un RTT independiente por Trustee:
 }
 ```
 
-Los perfiles escalares se normalizan internamente a un RTT por Trustee.
+Scalar profiles are internally normalized to one RTT value per Trustee.
 
-### Seguridad de KeyIDs
+### KeyID Safety
 
-LMS es stateful: un KeyID no puede reutilizarse.
+LMS is stateful: a KeyID must never be reused.
 
-`neteval/runner/keyid.py` mantiene un ledger persistente:
+`neteval/runner/keyid.py` maintains a persistent ledger:
 
 ```text
 neteval/results/<experiment-id>/keyids.jsonl
 ```
 
-El KeyID se **reserva antes** de intentar la firma. Un KeyID reservado no vuelve a asignarse aunque la ejecución falle posteriormente.
+A KeyID is **reserved before** a signing attempt is issued. A reserved KeyID is never assigned again, even if the execution later fails.
 
-Una vez que Round 1 comienza, el KeyID se considera consumido definitivamente.
+Once Round 1 begins, the KeyID is considered permanently consumed.
 
 ---
 
 ## 6. OpenSSL
 
-La validación final usa OpenSSL 4.x porque el OpenSSL estable del sistema puede no incluir soporte LMS.
+Final validation uses OpenSSL 4.x because the system OpenSSL may not include LMS support.
 
-El runner acepta un prefijo independiente:
+The runner accepts an independent installation prefix:
 
 ```bash
 export KLL_OPENSSL_PREFIX="$HOME/.local/openssl-4.0.1-lms"
 ```
 
-y utiliza:
+and uses:
 
 ```text
 $KLL_OPENSSL_PREFIX/bin/openssl
 ```
 
-con las bibliotecas de ese mismo prefijo.
+together with the libraries from the same prefix.
 
-Durante el setup se archivan:
+During setup, the following files are archived:
 
 ```text
 setup/lmspublickey.pem
@@ -297,19 +297,19 @@ setup/lmspublickey-openssl.txt
 setup/openssl-version.txt
 ```
 
-Cada firma generada se valida mediante:
+Each generated signature is validated with:
 
 ```bash
 openssl pkeyutl -verify
 ```
 
-La campaña experimental usa únicamente firmas verificadas correctamente.
+Only successfully verified signatures are used in the experimental campaign.
 
 ---
 
-## 7. Configuración experimental principal
+## 7. Main Experimental Configuration
 
-Parámetros utilizados en las campañas principales:
+Parameters used in the main campaigns:
 
 ```text
 LMS:                 lms_sha256_n32_h10
@@ -318,37 +318,37 @@ KeyID space:         1024
 message size:        1024 bytes
 concurrency:         1
 
-Topologías:
+Topologies:
   3-of-3
   5-of-5
   10-of-10
 
-Perfiles de red:
+Network profiles:
   baseline
   RTT 20 ms
   RTT 80 ms
   RTT 200 ms
 
-Warm-up global:      10 firmas
-Bloques aleatorios:  5
-Measured/block:      10 por perfil
-Conditioning:        1 muestra por transición de perfil
+Global warm-up:      10 signatures
+Randomized blocks:   5
+Measured/block:      10 per profile
+Conditioning:        1 sample per profile transition
 ```
 
-Dentro de cada campaña, todos los KeyIDs usan la misma coalición completa de Trustees activos.
+Within each campaign, all KeyIDs use the same full coalition of active Trustees.
 
-El orden de perfiles se randomiza independientemente en cada bloque a partir de una seed reproducible.
+Profile order is randomized independently in each block from a reproducible seed.
 
-Con esta configuración, cada campaña principal produce:
+With this configuration, each main campaign produces:
 
 ```text
-50 measured samples por perfil
-200 measured samples totales
+50 measured samples per profile
+200 measured samples total
 ```
 
-además de warm-up y conditioning.
+in addition to warm-up and conditioning samples.
 
-Las tres campañas principales producen conjuntamente:
+The three main campaigns jointly produce:
 
 ```text
 600 measured signatures
@@ -356,7 +356,7 @@ Las tres campañas principales producen conjuntamente:
 
 ---
 
-## 8. Ejecución de las campañas
+## 8. Running the Campaigns
 
 ### 3-of-3
 
@@ -394,13 +394,13 @@ KLL_PROFILE_SEED=20260817 \
 neteval/runner/run.sh final-k10
 ```
 
-No debe modificarse el código entre las campañas definitivas de una misma serie experimental.
+The code must not be modified between final campaigns belonging to the same experimental series.
 
 ---
 
-## 9. Campaña de RTT heterogéneo
+## 9. Heterogeneous RTT Campaign
 
-La validación adicional utiliza una coalición fija de **10-of-10** y compara tres perfiles:
+The additional validation uses a fixed **10-of-10** coalition and compares three profiles:
 
 ```text
 hom20:
@@ -414,25 +414,25 @@ hom200:
   10 × 200 ms
 ```
 
-El Trustee de alta latencia del perfil heterogéneo es siempre:
+The high-latency Trustee in the heterogeneous profile is always:
 
 ```text
 trustee-9
 ```
 
-La campaña usa la misma metodología de bloques que la evaluación principal:
+The campaign uses the same block-based methodology as the main evaluation:
 
 ```text
-Warm-up global:      10 firmas
-Bloques aleatorios:  5
-Perfiles por bloque: 3
-Conditioning:        1 por transición/perfil
-Measured/block:      10 por perfil
+Global warm-up:      10 signatures
+Randomized blocks:   5
+Profiles per block:  3
+Conditioning:        1 per transition/profile
+Measured/block:      10 per profile
 Measured/profile:    50
-Measured totales:    150
+Measured total:      150
 ```
 
-Ejecución:
+Run with:
 
 ```bash
 KLL_OPENSSL_PREFIX="$HOME/.local/openssl-4.0.1-lms" \
@@ -447,9 +447,9 @@ neteval/runner/run.sh hetero-rtt-k10-final
 
 ---
 
-## 10. Resultados producidos
+## 10. Generated Results
 
-Cada ejecución genera:
+Each run generates:
 
 ```text
 neteval/results/<experiment-id>/
@@ -466,21 +466,21 @@ neteval/results/<experiment-id>/
 └── logs/
 ```
 
-Contenido principal:
+Main contents:
 
-- `manifest.json`: parámetros, Git commit, estado del experimento y provenance;
-- `schedule.json`: orden aleatorio de perfiles por bloque y configuración RTT;
-- `schedule.tsv`: representación tabular del schedule;
-- `samples.jsonl`: un registro por intento de firma;
-- `keyids.jsonl`: ledger irreversible de KeyIDs;
-- `raw/`: métricas instrumentadas del Aggregator y Trustees;
-- `network/`: configuración `tc/netem`, mappings veth, objetivos RTT y validaciones;
-- `signatures/`: firmas LMS generadas;
-- `setup/`: configuración, BulletinBoard, clave pública y datos de OpenSSL;
-- `workload/`: mensaje utilizado en la campaña;
-- `logs/`: build, Dealer, curl y verificaciones.
+- `manifest.json`: parameters, Git commit, experiment status, and provenance;
+- `schedule.json`: randomized profile order by block and RTT configuration;
+- `schedule.tsv`: tabular representation of the schedule;
+- `samples.jsonl`: one record per signing attempt;
+- `keyids.jsonl`: irreversible KeyID ledger;
+- `raw/`: instrumented Aggregator and Trustee metrics;
+- `network/`: `tc/netem` configuration, veth mappings, RTT targets, and validations;
+- `signatures/`: generated LMS signatures;
+- `setup/`: configuration, BulletinBoard, public key, and OpenSSL information;
+- `workload/`: message used in the campaign;
+- `logs/`: build, Dealer, curl, and verification logs.
 
-Cada perfil de red archiva además:
+Each network profile also archives:
 
 ```text
 network/block-XX/<profile>/
@@ -493,43 +493,43 @@ network/block-XX/<profile>/
 
 ---
 
-## 11. Validación realizada
+## 11. Validation Performed
 
-Antes de las campañas finales se validaron end-to-end:
+Before the final campaigns, the following were validated end to end:
 
-- topologías **3-of-3**, **5-of-5** y **10-of-10**;
-- perfiles `baseline`, `RTT20`, `RTT80` y `RTT200`;
-- paralelización intra-ronda del Aggregator;
-- barrera estricta entre Round 1 y Round 2;
-- shaping simétrico Aggregator ↔ Trustees;
-- RTT homogéneo y heterogéneo;
-- descubrimiento dinámico de Trustees/veth;
-- validación automática del RTT por Trustee;
-- reserva irreversible de KeyIDs;
-- firmas RFC 8554;
-- verificación positiva con OpenSSL 4;
-- control negativo modificando el mensaje;
-- cardinalidad esperada de eventos instrumentados;
-- cleanup de `netem`, contenedores y volúmenes después de cada experimento;
-- árboles LMS `h=10` con espacio de 1024 KeyIDs;
-- ejecución aleatorizada por bloques;
-- archivado de configuración, schedule, provenance y métricas.
+- **3-of-3**, **5-of-5**, and **10-of-10** topologies;
+- `baseline`, `RTT20`, `RTT80`, and `RTT200` profiles;
+- intra-round Aggregator parallelization;
+- strict barrier between Round 1 and Round 2;
+- symmetric Aggregator ↔ Trustee shaping;
+- homogeneous and heterogeneous RTT;
+- dynamic Trustee/veth discovery;
+- automatic per-Trustee RTT validation;
+- irreversible KeyID reservation;
+- RFC 8554 signatures;
+- positive verification with OpenSSL 4;
+- negative control by modifying the message;
+- expected cardinality of instrumented events;
+- cleanup of `netem`, containers, and volumes after each experiment;
+- LMS `h=10` trees with a 1024-KeyID space;
+- randomized block execution;
+- archival of configuration, schedule, provenance, and metrics.
 
-En las campañas homogéneas, la latencia de firma crece aproximadamente en dos RTT adicionales por cada incremento de RTT, de acuerdo con las dos rondas secuenciales del protocolo.
+In the homogeneous campaigns, signing latency increases by approximately two additional RTTs for each RTT increment, consistent with the protocol's two sequential rounds.
 
-La campaña heterogénea confirmó además que, con nueve Trustees a aproximadamente 20 ms y uno a 200 ms, el Trustee de 200 ms fue:
+The heterogeneous campaign additionally confirmed that, with nine Trustees at approximately 20 ms and one at 200 ms, the 200 ms Trustee was:
 
 ```text
 Round 1:
-  último RPC en completar:      50 / 50
-  RPC de mayor duración:        50 / 50
+  last RPC to complete:         50 / 50
+  longest-duration RPC:        50 / 50
 
 Round 2:
-  último RPC en completar:      50 / 50
-  RPC de mayor duración:        50 / 50
+  last RPC to complete:         50 / 50
+  longest-duration RPC:        50 / 50
 ```
 
-Las medianas observadas fueron:
+Observed medians were:
 
 ```text
 Aggregator signing latency:
@@ -539,7 +539,7 @@ hetero-9x20-1x200:      447.926 ms
 hom200:                 461.763 ms
 ```
 
-En el perfil heterogéneo:
+For the heterogeneous profile:
 
 ```text
 Round 1:
@@ -551,47 +551,47 @@ Round 2:
   median round - RPC span:        0.246 ms
 ```
 
-Estos resultados validan experimentalmente que, con la implementación paralela, las latencias de los Trustees no se acumulan serialmente dentro de una ronda. Cada ronda completa esencialmente cuando termina su RPC participante más lenta:
+These results experimentally validate that, with the parallel implementation, Trustee latencies do not accumulate serially within a round. Each round completes essentially when its slowest participating RPC completes:
 
 ```text
 T_round ≈ max(T_RPC_i)
 ```
 
-y, cuando la heterogeneidad está dominada por retardo de propagación:
+and, when heterogeneity is dominated by propagation delay:
 
 ```text
 T_network ≈ 2 × max(RTT_i)
 ```
 
-para las dos rondas secuenciales.
+for the two sequential rounds.
 
 ---
 
-## 12. Alcance experimental
+## 12. Experimental Scope
 
-La evaluación utiliza contenedores independientes y sockets TCP reales, pero todos los contenedores se ejecutan sobre un único host Linux.
+The evaluation uses independent containers and real TCP sockets, but all containers run on a single Linux host.
 
-`tc/netem` introduce únicamente retardo controlado en los enlaces:
+`tc/netem` introduces only controlled delay on:
 
 ```text
 Aggregator ↔ Trustees
 ```
 
-Las campañas actuales no introducen artificialmente:
+The current campaigns do not artificially introduce:
 
-- pérdida de paquetes;
+- packet loss;
 - jitter;
-- límites de ancho de banda;
-- congestión;
-- carga concurrente de firmas.
+- bandwidth limits;
+- congestion;
+- concurrent signing load.
 
-Tampoco pretenden reproducir todos los efectos de un despliegue Internet geográficamente distribuido.
+They also do not attempt to reproduce every effect of a geographically distributed Internet deployment.
 
-El objetivo de la evaluación es aislar de forma reproducible la sensibilidad de la implementación a:
+The purpose of the evaluation is to reproducibly isolate the implementation's sensitivity to:
 
 - RTT;
-- tamaño de coalición;
-- heterogeneidad de RTT entre Trustees;
-- estructura temporal de las dos rondas del protocolo.
+- coalition size;
+- RTT heterogeneity across Trustees;
+- the temporal structure of the protocol's two rounds.
 
-Los escenarios con enlaces compartidos de ancho de banda limitado, pérdida, jitter o carga concurrente quedan fuera del alcance de las campañas actuales.
+Scenarios involving bandwidth-limited shared links, packet loss, jitter, or concurrent load remain outside the scope of the current campaigns.
